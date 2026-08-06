@@ -1,0 +1,49 @@
+name: build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Library and catalog
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      # The Gradle daemon itself runs on a JDK 21 that Gradle provisions from the
+      # criteria in gradle/gradle-daemon-jvm.properties. This one is here so a JDK
+      # is present before that happens.
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6.2.0
+
+      # Lint is part of `build` and fails it, so this covers the whole gate:
+      # library, catalog, and every lint check in both.
+      - name: Build
+        run: ./gradlew build --no-daemon --stacktrace
+
+      - name: Verify the Maven publication assembles
+        run: ./gradlew :liquify:publishReleasePublicationToLocalRepository --no-daemon
+
+      - name: Upload lint reports
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: lint-reports
+          path: '**/build/reports/lint-results-*.html'
+          if-no-files-found: ignore

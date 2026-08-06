@@ -1,0 +1,51 @@
+name: Bug report
+description: Something renders wrong, crashes, or does not behave as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Almost everything in this library is visual, so a screenshot or a short screen recording
+        is usually worth more than a paragraph of description. Please attach one if you can.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: And what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: The smallest snippet that shows it — the modifier chain and its effects block.
+      render: kotlin
+    validations:
+      required: true
+
+  - type: input
+    id: device
+    attributes:
+      label: Device and API level
+      description: >
+        Refraction and merging need API 33, blur needs 31, and the fallbacks below those are
+        deliberate. Emulators also misreport shader behaviour, so please say if it was one.
+      placeholder: Pixel 7, API 34 — physical device
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Liquify version
+      placeholder: 0.1.0
+    validations:
+      required: true
+
+  - type: textarea
+    id: group
+    attributes:
+      label: If it involves a LiquidGlassGroup
+      description: How many members, what `merge` value, and whether they were moving at the time.

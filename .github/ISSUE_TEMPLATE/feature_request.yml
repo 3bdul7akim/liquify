@@ -1,0 +1,30 @@
+name: Feature request
+description: Something the library cannot do yet.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the UI you are trying to build rather than the API you think you need — the shape
+        of the API usually falls out of the use case, and it tends to fall out better that way.
+
+  - type: textarea
+    id: goal
+    attributes:
+      label: What are you trying to build
+      description: The effect or interaction you want, and what it should feel like.
+    validations:
+      required: true
+
+  - type: textarea
+    id: current
+    attributes:
+      label: What you tried
+      description: Where the current API runs out, if you got that far.
+      render: kotlin
+
+  - type: textarea
+    id: references
+    attributes:
+      label: References
+      description: Screenshots, recordings or links to something that does it well.

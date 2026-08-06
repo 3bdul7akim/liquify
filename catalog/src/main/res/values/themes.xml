@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Bar icon colour is not set here: enableEdgeToEdge() drives it from the system's
+         light/dark setting so it can follow a theme switch without the activity restarting. -->
+    <style name="Theme.LiquifyCatalog" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+</resources>
