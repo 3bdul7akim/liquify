@@ -2,7 +2,6 @@ package com.hakim.liquify.catalog
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.LocalOverscrollFactory
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -88,7 +87,6 @@ enum class Destination(val title: String, val summary: String) {
     )
 }
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun CatalogApp() {
     CatalogTheme {
@@ -125,7 +123,6 @@ fun CatalogApp() {
                                 selected = material,
                                 onSelect = { material = it }
                             )
-
                             Destination.Playground -> PlaygroundScreen(backdrop)
                             Destination.Scroll -> ScrollScreen(backdrop)
                         }
@@ -194,8 +191,8 @@ private fun HomeScreen(
     onSelect: (Destination) -> Unit
 ) {
     LazyColumn(
-        modifier = Modifier.fillMaxSize().systemBarsPadding(),
-        contentPadding = PaddingValues(20.dp),
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(start = 20.dp, top = 30.dp, end = 20.dp, bottom = 30.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         item {
@@ -217,8 +214,6 @@ private fun HomeScreen(
         items(Destination.entries) { entry ->
             DestinationCard(backdrop, entry) { onSelect(entry) }
         }
-
-        item { Spacer(Modifier.height(24.dp)) }
     }
 }
 

@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
@@ -74,12 +73,9 @@ fun PlaygroundScreen(backdrop: Backdrop) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .systemBarsPadding()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp)
+            .padding(start = 20.dp, top = 110.dp, end = 20.dp, bottom = 30.dp)
     ) {
-        Spacer(Modifier.height(84.dp))
-
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -198,8 +194,6 @@ fun PlaygroundScreen(backdrop: Backdrop) {
                 ToggleRow(cardBackdrop, "Stretching", stretching) { stretching = !stretching }
             }
         }
-
-        Spacer(Modifier.height(40.dp))
     }
 }
 

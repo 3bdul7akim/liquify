@@ -58,12 +58,7 @@ fun ScrollScreen(wallpaperBackdrop: Backdrop) {
             modifier = Modifier
                 .fillMaxSize()
                 .layerBackdrop(contentBackdrop),
-            contentPadding = PaddingValues(
-                start = 20.dp,
-                end = 20.dp,
-                top = 140.dp,
-                bottom = 160.dp
-            ),
+            contentPadding = PaddingValues(start = 20.dp, top = 110.dp, end = 20.dp, bottom = 110.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             items(24) { index ->

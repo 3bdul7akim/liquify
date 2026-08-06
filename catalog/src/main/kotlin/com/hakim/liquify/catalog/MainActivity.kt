@@ -1,9 +1,7 @@
 package com.hakim.liquify.catalog
 
-import android.graphics.Color
 import android.os.Bundle
 import androidx.activity.ComponentActivity
-import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -20,16 +18,9 @@ class MainActivity : ComponentActivity() {
             // re-applied from composition rather than once in onCreate.
             val dark = isSystemInDarkTheme()
             LaunchedEffect(dark) {
-                enableEdgeToEdge(
-                    statusBarStyle = systemBarStyle(dark),
-                    navigationBarStyle = systemBarStyle(dark)
-                )
+                enableEdgeToEdge()
             }
             CatalogApp()
         }
     }
 }
-
-private fun systemBarStyle(dark: Boolean): SystemBarStyle =
-    if (dark) SystemBarStyle.dark(Color.BLACK)
-    else SystemBarStyle.light(Color.WHITE, Color.GRAY)

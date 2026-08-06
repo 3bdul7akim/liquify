@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.runtime.Composable
@@ -75,8 +74,8 @@ fun MaterialsScreen(
     // chain, and an eager Column would compose and draw all of them whether or not they are on
     // screen.
     LazyColumn(
-        modifier = Modifier.fillMaxSize().systemBarsPadding(),
-        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 84.dp, bottom = 40.dp),
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(start = 20.dp, top = 100.dp, end = 20.dp, bottom = 20.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp)
     ) {
         items(Materials) { (name, preset, description) ->

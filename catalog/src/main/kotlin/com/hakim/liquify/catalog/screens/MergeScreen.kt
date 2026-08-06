@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
@@ -88,11 +87,10 @@ fun MergeScreen(backdrop: Backdrop) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .systemBarsPadding()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp)
+            .padding(start = 20.dp, top = 30.dp, end = 20.dp, bottom = 0.dp)
     ) {
-        Spacer(Modifier.height(104.dp))
+        Spacer(Modifier.height(110.dp))
 
         LiquidGlassGroup(
             backdrop = backdrop,
@@ -121,7 +119,7 @@ fun MergeScreen(backdrop: Backdrop) {
             }
         }
 
-        Spacer(Modifier.height(40.dp))
+        Spacer(Modifier.height(50.dp))
 
         // Plain surface, not glass: the toggle and the sliders are panes of glass themselves, and
         // stacking them on another one shows one backdrop through the other.
