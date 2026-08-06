@@ -29,17 +29,6 @@ Box(Modifier.fillMaxSize()) {
 
 ## About this project
 
-I'm Hakim, a Software Engineering bachelor's student in Germany. Liquify started as a way to find
-out how far I could push a graphics-heavy Compose library — partly to test my own programming and
-design instincts, partly to see what that looks like when I work *with* AI instead of against it.
-
-So yes: **this library was vibe coded by me with the help of AI.** Every architectural decision,
-every visual judgement and every "no, that's wrong, here's why" was mine; a lot of the typing and a
-lot of the shader algebra was not. **I'd rather say that plainly than pretend otherwise**. It was also
-tested on a real phone, with screenshots and `dumpsys gfxinfo`, not just by looking at it and hoping.
-
-### Why it exists
-
 Liquify began as a **clone** of [Kyant0/AndroidLiquidGlass][alg] — not a fork, which in hindsight
 would have been the tidier choice for attribution. Kyant0's work is excellent and solved the hard
 part: the rounded-rectangle signed distance field and the refraction that makes glass read as glass
