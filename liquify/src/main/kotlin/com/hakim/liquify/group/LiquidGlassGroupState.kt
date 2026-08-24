@@ -5,6 +5,7 @@ import androidx.compose.runtime.ProvidableCompositionLocal
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.remember
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.LayoutCoordinates
 import com.hakim.liquify.Backdrop
 import com.hakim.liquify.BackdropEffectScope
@@ -104,6 +105,15 @@ internal class GlassMember {
      * comes away from the content. The glow itself is drawn by the member, not from here.
      */
     var interaction: InteractiveHighlight? = null
+
+    /**
+     * Colour this member contributes to the merged surface, or [Color.Unspecified] for none.
+     *
+     * The alpha carries the strength of the tint. The merge program blends these across members
+     * with the same weights it blends their distance fields with, so the colour follows the
+     * geometry of the fusion rather than an axis through the group.
+     */
+    var tint: Color = Color.Unspecified
 
     fun setGeometry(
         left: Float,

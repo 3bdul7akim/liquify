@@ -20,6 +20,7 @@ import androidx.compose.ui.graphics.isSpecified
 import androidx.compose.ui.layout.layout
 import com.hakim.liquify.backdrops.LayerBackdrop
 import com.hakim.liquify.effects.merge
+import com.hakim.liquify.effects.mergeTint
 import com.hakim.liquify.group.LocalGroupDefaults
 import com.hakim.liquify.highlight.Highlight
 import com.hakim.liquify.highlight.HighlightElement
@@ -173,9 +174,16 @@ public fun Modifier.liquify(
         if (group != null) {
             val groupEffects = group.effects
             val mergeAmount = group.mergeAmount
+            // A member's *material* is the group's — every pane of one surface is the same glass.
+            // Its **colour** is not: it is handed to the merge pass, which blends the members'
+            // tints with the very same weights it blends their distance fields with, so two
+            // differently coloured panes mix through the bridge instead of meeting at a seam.
+            // An explicit `tint` wins over the material's, exactly as it does outside a group.
+            val memberTint = if (tint.isSpecified) tint else material.tint
             val block: BackdropEffectScope.() -> Unit = {
                 groupEffects()
                 if (mergeAmount > 0f) merge(mergeAmount)
+                mergeTint(memberTint)
             }
             block
         } else {

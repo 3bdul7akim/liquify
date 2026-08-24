@@ -10,6 +10,7 @@ package com.hakim.liquify
 import android.os.Build
 import androidx.annotation.RequiresApi
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.RenderEffect
 import androidx.compose.ui.graphics.Shape
@@ -70,6 +71,13 @@ internal abstract class BaseBackdropEffectScope : BackdropEffectScope {
      */
     var mergeRadius: Float = 0f
 
+    /**
+     * Colour this element contributes to the merged surface, requested by
+     * [mergeTint][com.hakim.liquify.effects.mergeTint]. Unspecified means the member adds no
+     * colour of its own and shows whatever the group's material makes of the backdrop.
+     */
+    var mergeTintColor: Color = Color.Unspecified
+
     private val runtimeShaderCache = RuntimeShaderCacheImpl()
 
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)
@@ -103,6 +111,7 @@ internal abstract class BaseBackdropEffectScope : BackdropEffectScope {
         padding = 0f
         renderEffect = null
         mergeRadius = 0f
+        mergeTintColor = Color.Unspecified
         effects()
     }
 
@@ -114,6 +123,7 @@ internal abstract class BaseBackdropEffectScope : BackdropEffectScope {
         padding = 0f
         renderEffect = null
         mergeRadius = 0f
+        mergeTintColor = Color.Unspecified
         runtimeShaderCache.clear()
     }
 }

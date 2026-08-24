@@ -17,6 +17,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.drawscope.ContentDrawScope
+import androidx.compose.ui.graphics.isSpecified
 import androidx.compose.ui.graphics.layer.CompositingStrategy
 import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.graphics.layer.drawLayer
@@ -25,7 +26,9 @@ import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.node.DrawModifierNode
 import androidx.compose.ui.node.GlobalPositionAwareModifierNode
 import androidx.compose.ui.node.ModifierNodeElement
+import androidx.compose.ui.node.ObserverModifierNode
 import androidx.compose.ui.node.invalidateDraw
+import androidx.compose.ui.node.observeReads
 import androidx.compose.ui.node.requireDensity
 import androidx.compose.ui.node.requireGraphicsContext
 import androidx.compose.ui.platform.InspectorInfo
@@ -42,9 +45,16 @@ import com.hakim.liquify.highlight.Highlight
 import com.hakim.liquify.highlight.HighlightStyle
 import com.hakim.liquify.internal.MAX_MERGED_ELEMENTS
 import com.hakim.liquify.internal.RuntimeShaderEffect
+import com.hakim.liquify.internal.UniformParam
+import com.hakim.liquify.internal.UniformRadii
+import com.hakim.liquify.internal.UniformRect
+import com.hakim.liquify.internal.UniformTint
 import com.hakim.liquify.internal.chain
 import com.hakim.liquify.internal.mergeGlassShader
+import com.hakim.liquify.internal.mergeGlassShaderKey
+import com.hakim.liquify.internal.mergeSilhouetteMaskShaderKey
 import com.hakim.liquify.internal.mergeSilhouetteShader
+import com.hakim.liquify.internal.mergeSilhouetteShaderKey
 import com.hakim.liquify.internal.recordLayer
 import com.hakim.liquify.internal.setRuntimeShader
 import com.hakim.liquify.isRenderEffectSupported
@@ -218,13 +228,20 @@ private class LiquidGlassGroupNode(
     var effects: (BackdropEffectScope.() -> Unit)?,
     var highlight: (() -> Highlight?)?,
     var shadow: (() -> Shadow?)?
-) : DrawModifierNode, GlobalPositionAwareModifierNode, Modifier.Node() {
+) : DrawModifierNode, GlobalPositionAwareModifierNode, ObserverModifierNode, Modifier.Node() {
 
     override val shouldAutoInvalidate: Boolean = false
 
     private val effectScope = GroupEffectScope()
     private val shaderCache = RuntimeShaderCacheImpl()
     private val active = ArrayList<GlassMember>(MAX_MERGED_ELEMENTS)
+
+    /** The effects block the current chain was built from, and whether it has to be rebuilt. */
+    private var appliedEffects: (BackdropEffectScope.() -> Unit)? = null
+    private var effectsDirty = true
+
+    /** Everything the recorded shadow depends on, so an unchanged one can simply be redrawn. */
+    private var shadowFingerprint = Long.MIN_VALUE
 
     private var glassLayer: GraphicsLayer? = null
     private var shadowBlurLayer: GraphicsLayer? = null
@@ -282,11 +299,28 @@ private class LiquidGlassGroupNode(
         val contentHeight = bottom - top
 
         val density = requireDensity()
-        effectScope.update(density.density, density.fontScale, Size(contentWidth, contentHeight), layoutDirection)
-        effectScope.resetLens()
-        // Members move every frame during an animation, so the geometry uniforms — and therefore
-        // the whole chain — have to be rebuilt each draw rather than cached on size changes.
-        effectScope.apply(effectsBlock)
+        // The chain depends on the union size, the density and the block itself — never on where
+        // the members sit inside it, since their geometry reaches the merge program through its
+        // own uniforms further down. So a group that is merely being redrawn, because the page
+        // scrolled behind it, keeps the effects it already has instead of allocating a blur, a
+        // colour filter and a chain every frame.
+        //
+        // An effects block is free to read animated state, though, and that is invisible to the
+        // check above — so the apply runs inside observeReads and a changed read marks it dirty.
+        val scopeChanged = effectScope.update(
+            density.density,
+            density.fontScale,
+            Size(contentWidth, contentHeight),
+            layoutDirection
+        )
+        if (scopeChanged || effectsDirty || effectsBlock !== appliedEffects) {
+            observeReads {
+                effectScope.resetLens()
+                effectScope.apply(effectsBlock)
+            }
+            appliedEffects = effectsBlock
+            effectsDirty = false
+        }
 
         val padding = effectScope.padding
         val layerLeft = floor(left - padding)
@@ -295,13 +329,24 @@ private class LiquidGlassGroupNode(
         val layerHeight = ceil(contentHeight + padding * 2f).toInt() + 1
         if (layerWidth <= 0 || layerHeight <= 0) return drawContent()
 
+        // A group whose members declare no colour compiles — and pays for — the plain program.
+        // The two variants are cached under different keys, so switching between them costs one
+        // shader compile the first time a colour appears and nothing afterwards.
+        var tinted = false
+        for (i in 0 until count) {
+            val memberTint = active[i].tint
+            if (memberTint.isSpecified && memberTint.alpha > 0f) {
+                tinted = true
+                break
+            }
+        }
+
         val highlight = highlight?.invoke()
-        val glassShader = shaderCache.obtainRuntimeShader(
-            "liquify.merge.glass.$count",
-            mergeGlassShader(count)
-        )
+        val glassShader = shaderCache.obtainRuntimeShader(mergeGlassShaderKey(count, tinted)) {
+            mergeGlassShader(count, tinted)
+        }
         glassShader.apply {
-            writeMemberUniforms(active, count, density)
+            writeMemberUniforms(active, count, density, tinted)
             setFloatUniform("offset", layerLeft, layerTop)
             setFloatUniform("aaWidth", 1f)
             setFloatUniform("refractionHeight", effectScope.refractionHeight)
@@ -358,7 +403,8 @@ private class LiquidGlassGroupNode(
     private fun RuntimeShader.writeMemberUniforms(
         members: List<GlassMember>,
         count: Int,
-        density: Density
+        density: Density,
+        tinted: Boolean
     ) {
         for (i in 0 until count) {
             val member = members[i]
@@ -386,16 +432,28 @@ private class LiquidGlassGroupNode(
             val centerX = member.centerX + member.halfWidth * (scale.x - 1f)
             val centerY = member.centerY + member.halfHeight * (scale.y - 1f)
 
-            setFloatUniform("rect$i", centerX, centerY, halfWidth, halfHeight)
+            setFloatUniform(UniformRect[i], centerX, centerY, halfWidth, halfHeight)
             val radii = member.cornerRadii
             setFloatUniform(
-                "radii$i",
+                UniformRadii[i],
                 radii[0] * radiusScale,
                 radii[1] * radiusScale,
                 radii[2] * radiusScale,
                 radii[3] * radiusScale
             )
-            setFloatUniform("param$i", member.mergeRadius, 0f, 0f, 0f)
+            // param.y carries the tint strength; the silhouette program has no colour uniforms at
+            // all, so it is only ever written — never read — there.
+            val memberTint = member.tint
+            val tintAmount = if (memberTint.isSpecified) memberTint.alpha else 0f
+            setFloatUniform(UniformParam[i], member.mergeRadius, tintAmount, 0f, 0f)
+            if (tinted) {
+                // Opaque: the strength travels in param.y, and a layout(color) uniform would
+                // otherwise have its alpha applied twice.
+                setColorUniform(
+                    UniformTint[i],
+                    if (memberTint.isSpecified) memberTint.copy(alpha = 1f) else Color.Transparent
+                )
+            }
         }
     }
 
@@ -432,56 +490,119 @@ private class LiquidGlassGroupNode(
         val shadowLeft = layerLeft - margin
         val shadowTop = layerTop - margin
 
-        // The silhouette is sampled in the shadow layer's own space, so it needs its own program
-        // instance: sharing one with the glass pass would mean sharing uniforms too.
-        val silhouette = shaderCache.obtainRuntimeShader(
-            "liquify.merge.silhouette.$count",
-            mergeSilhouetteShader(count)
-        ).apply {
-            writeMemberUniforms(active, count, density)
-            setFloatUniform("aaWidth", 1f)
-            setColorUniform("color", shadow.color.copy(alpha = 1f))
-            setFloatUniform("colorAlpha", shadow.color.alpha)
-            // Displaced by the shadow offset: the shadow falls where the shape would be if it were
-            // that much further from the surface.
-            setFloatUniform("offset", shadowLeft - offsetX, shadowTop - offsetY)
-        }
-        val cutout = shaderCache.obtainRuntimeShader(
-            "liquify.merge.silhouetteMask.$count",
-            mergeSilhouetteShader(count)
-        ).apply {
-            writeMemberUniforms(active, count, density)
-            setFloatUniform("aaWidth", 1f)
-            setColorUniform("color", Color.White)
-            setFloatUniform("colorAlpha", 1f)
-            setFloatUniform("offset", shadowLeft, shadowTop)
+        // Nothing about this shadow depends on the backdrop, only on the silhouette and the shadow
+        // itself — so redrawing the group because the page scrolled behind it does not need two
+        // full-size layers recorded again. Alpha and blend mode stay out of the fingerprint: they
+        // are layer properties, applied below without touching the recording.
+        val fingerprint = shadowFingerprint(
+            count, radius, offsetX, offsetY, shadow.color, shadowLeft, shadowTop,
+            shadowWidth, shadowHeight
+        )
+        if (fingerprint != shadowFingerprint) {
+            shadowFingerprint = fingerprint
+
+            // The silhouette is sampled in the shadow layer's own space, so it needs its own
+            // program instance: sharing one with the glass pass would mean sharing uniforms too.
+            val silhouette = shaderCache.obtainRuntimeShader(mergeSilhouetteShaderKey(count)) {
+                mergeSilhouetteShader(count)
+            }.apply {
+                writeMemberUniforms(active, count, density, tinted = false)
+                setFloatUniform("aaWidth", 1f)
+                setColorUniform("color", shadow.color.copy(alpha = 1f))
+                setFloatUniform("colorAlpha", shadow.color.alpha)
+                // Displaced by the shadow offset: the shadow falls where the shape would be if it
+                // were that much further from the surface.
+                setFloatUniform("offset", shadowLeft - offsetX, shadowTop - offsetY)
+            }
+            val cutout = shaderCache.obtainRuntimeShader(mergeSilhouetteMaskShaderKey(count)) {
+                mergeSilhouetteShader(count)
+            }.apply {
+                writeMemberUniforms(active, count, density, tinted = false)
+                setFloatUniform("aaWidth", 1f)
+                setColorUniform("color", Color.White)
+                setFloatUniform("colorAlpha", 1f)
+                setFloatUniform("offset", shadowLeft, shadowTop)
+            }
+
+            silhouettePaint.setRuntimeShader(silhouette)
+            silhouetteMaskPaint.setRuntimeShader(cutout)
+
+            if (appliedShadowRadius != radius) {
+                blurLayer.renderEffect =
+                    if (radius > 0f) BlurEffect(radius, radius, TileMode.Decal) else null
+                appliedShadowRadius = radius
+            }
+            blurLayer.topLeft = IntOffset.Zero
+            recordShadow(blurLayer, compositeLayer, shadowWidth, shadowHeight)
         }
 
-        silhouettePaint.setRuntimeShader(silhouette)
-        silhouetteMaskPaint.setRuntimeShader(cutout)
+        compositeLayer.alpha = shadow.alpha
+        compositeLayer.blendMode = shadow.blendMode
+        compositeLayer.topLeft = IntOffset(shadowLeft.roundToInt(), shadowTop.roundToInt())
+        drawLayer(compositeLayer)
+    }
 
-        if (appliedShadowRadius != radius) {
-            blurLayer.renderEffect =
-                if (radius > 0f) BlurEffect(radius, radius, TileMode.Decal) else null
-            appliedShadowRadius = radius
+    /**
+     * Everything the recorded shadow is made of, folded into one value.
+     *
+     * A member that is being *stretched* deforms through a layer scale that layout never reports,
+     * so its geometry here would look unchanged while the silhouette moves — that case gives up on
+     * the comparison and re-records, which costs nothing in practice because it only lasts as long
+     * as a finger is down.
+     */
+    private fun shadowFingerprint(
+        count: Int,
+        radius: Float,
+        offsetX: Float,
+        offsetY: Float,
+        color: Color,
+        shadowLeft: Float,
+        shadowTop: Float,
+        shadowWidth: Int,
+        shadowHeight: Int
+    ): Long {
+        var hash = count * 31L + 17L
+        hash = hash * 31L + radius.toRawBits()
+        hash = hash * 31L + offsetX.toRawBits()
+        hash = hash * 31L + offsetY.toRawBits()
+        hash = hash * 31L + color.hashCode()
+        hash = hash * 31L + shadowLeft.toRawBits()
+        hash = hash * 31L + shadowTop.toRawBits()
+        hash = hash * 31L + shadowWidth
+        hash = hash * 31L + shadowHeight
+        for (i in 0 until count) {
+            val member = active[i]
+            val interaction = member.interaction
+            if (interaction != null && interaction.stretches) return Long.MIN_VALUE
+            hash = hash * 31L + member.centerX.toRawBits()
+            hash = hash * 31L + member.centerY.toRawBits()
+            hash = hash * 31L + member.halfWidth.toRawBits()
+            hash = hash * 31L + member.halfHeight.toRawBits()
+            hash = hash * 31L + member.mergeRadius.toRawBits()
+            val radii = member.cornerRadii
+            for (corner in 0..3) hash = hash * 31L + radii[corner].toRawBits()
         }
-        blurLayer.topLeft = IntOffset.Zero
+        return hash
+    }
+
+    private fun ContentDrawScope.recordShadow(
+        blurLayer: GraphicsLayer,
+        compositeLayer: GraphicsLayer,
+        shadowWidth: Int,
+        shadowHeight: Int
+    ) {
         blurLayer.record(IntSize(shadowWidth, shadowHeight)) {
             drawContext.canvas.drawRect(
                 0f, 0f, shadowWidth.toFloat(), shadowHeight.toFloat(), silhouettePaint
             )
         }
 
-        compositeLayer.alpha = shadow.alpha
-        compositeLayer.blendMode = shadow.blendMode
         compositeLayer.record(IntSize(shadowWidth, shadowHeight)) {
             drawLayer(blurLayer)
             drawContext.canvas.drawRect(
                 0f, 0f, shadowWidth.toFloat(), shadowHeight.toFloat(), silhouetteMaskPaint
             )
         }
-        compositeLayer.topLeft = IntOffset(shadowLeft.roundToInt(), shadowTop.roundToInt())
-        drawLayer(compositeLayer)
     }
 
     private var groupCoordinates: LayoutCoordinates? = null
@@ -501,6 +622,17 @@ private class LiquidGlassGroupNode(
             lastPosition = position
             invalidateDraw()
         }
+    }
+
+    /**
+     * State the effects block reads has changed, so the cached chain no longer describes it.
+     *
+     * The block runs during draw — the union size it needs only exists then — so this cannot
+     * rebuild here; it marks the chain stale and lets the next draw do the work.
+     */
+    override fun onObservedReadsChanged() {
+        effectsDirty = true
+        invalidateDraw()
     }
 
     override fun onAttach() {
@@ -527,6 +659,9 @@ private class LiquidGlassGroupNode(
         shaderCache.clear()
         effectScope.reset()
         appliedShadowRadius = Float.NaN
+        appliedEffects = null
+        effectsDirty = true
+        shadowFingerprint = Long.MIN_VALUE
     }
 }
 

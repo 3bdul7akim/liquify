@@ -37,7 +37,8 @@ rather than as a blurred rectangle. Credit for that foundation belongs to him.
 What I wanted on top of it:
 
 - **Merging.** Glass that fuses into one body when two elements approach and pinches apart as they
-  separate. That was the headline feature and it did not exist in the original at all.
+  separate, with each member's colour flowing through the bridge into its neighbour's. That was the
+  headline feature and it did not exist in the original at all.
 - **One-line interactions.** `dragging`, `stretching` and `interactiveHighlight` as plain booleans
   on the modifier. The reference had these behaviours, but only inside its demo app — you had to
   copy them out by hand.
@@ -57,7 +58,7 @@ open an issue, describe what you're trying to build, and I'll help as soon as I 
 
 ```kotlin
 dependencies {
-    implementation("io.github.3bdul7akim:liquify:1.0.0")
+    implementation("io.github.3bdul7akim:liquify:1.1.0")
 }
 ```
 
@@ -106,7 +107,8 @@ Modifier.liquify(
     shape = RoundedRectangle(28.dp),   // the outline; squircle corners
     material = GlassMaterial.Regular,  // defaults to LocalGlassMaterial.current
     backdrop = null,                   // null = inherit from ProvideBackdrop / the group
-    tint = Color.Unspecified,          // overrides GlassMaterial.tint when specified
+    tint = Color.Unspecified,          // overrides GlassMaterial.tint; in a group it is what the
+                                       // merge pass blends with the neighbours' colours
     gradientBlur = false,              // frost the middle, keep the rim clear
     highlight = Highlight.Default,     // specular rim, or null for none
     shadow = Shadow.Default,           // drop shadow, or null
@@ -159,8 +161,8 @@ Modifier.liquify(
 
 > **One gotcha worth knowing.** Overload C does **not** inherit the group's material or join its
 > merged surface automatically. An explicit effect stack means you are in control — call
-> `merge()` inside `effects` to opt in. That is exactly what lets a child stay a separate pane of
-> glass inside a group.
+> `merge()` inside `effects` to opt in, and `mergeTint()` alongside it to give that share of the
+> surface a colour. That is exactly what lets a child stay a separate pane of glass inside a group.
 
 ---
 
@@ -236,6 +238,7 @@ scope is a `Density`, so `16.dp.toPx()` works directly inside the block.
 | `opacity(alpha)` | Lets the raw background through. |
 | `colorFilter(filter)` | Any `ColorFilter`. |
 | `merge(amount)` / `merge(radius: Dp)` | Joins the enclosing group's merged surface. |
+| `mergeTint(color)` | Colours this element's share of that surface, blended with its neighbours'. |
 | `material(material, mergeAmount)` | Applies a whole `GlassMaterial` in the right order. |
 | `effect(renderEffect)` / `runtimeShaderEffect(key, agsl, name) { }` | Escape hatches for your own AGSL. |
 
@@ -359,6 +362,36 @@ seam where two members overlap.
 
 `merge(amount)` is relative to the element's own size; `merge(24.dp)` sets an absolute reach, which
 is what you want when differently sized elements have to bridge consistently.
+
+A bridge only appears once the reach is wider than the gap it has to cross — the smooth minimum
+pulls the surface in by at most a quarter of `k`, so two elements fuse when **`k` exceeds twice the
+distance between them**. With `merge(amount)` that works out to `amount > 4 × gap / short side`: two
+48 dp buttons 8 dp apart need roughly `0.7` before anything happens, and look properly gooey around
+`1.2`. Below that they simply lean towards one another without ever touching.
+
+### Colours that mix
+
+Members keep their own colour, and the merge blends them. A member's `tint` is not drawn by the
+member — that would stop dead at its own bounds and cut a seam across the bridge — but handed to the
+group, which mixes the colours with **the very same weights it blends the distance fields with**:
+
+```kotlin
+LiquidGlassGroup(backdrop, merge = 1.2f) {
+    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Box(Modifier.size(72.dp).liquify(Capsule(), tint = Color.Red.copy(alpha = 0.75f)))
+        Box(Modifier.size(72.dp).liquify(Capsule(), tint = Color.Blue.copy(alpha = 0.75f)))
+    }
+}
+```
+
+Apart, the two stay pure red and pure blue. As they approach, the colours flow into one another
+exactly as far as their surfaces do, and the neck of a finished bridge carries the mixture of both.
+The alpha is the *strength* of the tint, as everywhere else — an untinted neighbour therefore
+dilutes a colour towards clear glass rather than dragging it towards black.
+
+The material overload routes `tint` here for you. From a hand-written `effects` block, call
+[`mergeTint(color)`](#effects) yourself. Only groups whose members actually declare a colour compile
+the tinted program, so this costs nothing when it is not used.
 
 **Up to twelve members per group.** Cost is linear in that count — each pixel evaluates every
 member's field five times, once for the distance and four for the gradient — so the group renders
@@ -559,6 +592,10 @@ unstretched copy of it.
   controls, not full-screen surfaces.
 - `gradientBlur` composites one branch per step — see the table above before raising `steps`.
 - A merged group renders over the union of its members, so keep groups tight.
+- A group that is only being *redrawn* — the page scrolled behind it, nothing about it moved — keeps
+  the effect chain it already built and reuses its recorded shadow, so that case costs one merge
+  pass and nothing else. Moving a member, resizing the group or animating the effects block brings
+  the rebuild back, as it must.
 - Prefer `LazyColumn` over a scrolling `Column` for lists of glass cards, so offscreen ones are
   neither composed nor drawn.
 - **Measure with a warm-up.** Shader compilation and thermals move these numbers enormously; I
@@ -579,7 +616,8 @@ Used shapes come from **[Kyant0/Shapes][shapes]**, consumed as a Maven artifact 
 
 See [`NOTICE`](NOTICE) for the formal attribution.
 
-What Liquify adds on top: the merged distance-field pass and the whole group renderer, gradient
+What Liquify adds on top: the merged distance-field pass and the whole group renderer, per-member
+colour blended through that same field, gradient
 blur, the material presets and app-wide material theming, the one-line interaction flags, 
 the consolidation of `drawBackdrop` and `liquify` into a single modifier.
 

@@ -7,7 +7,7 @@ plugins {
 
 val libraryGroupId = "io.github.3bdul7akim"
 val libraryArtifactId = "liquify"
-val libraryVersion = "1.0.0"
+val libraryVersion = "1.1.0"
 
 android {
     namespace = "com.hakim.liquify"

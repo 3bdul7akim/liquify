@@ -303,6 +303,7 @@ internal class LiquifyNode(
         }
 
         member.mergeRadius = mergeRadius
+        member.tint = effectScope.mergeTintColor
         member.effects = effects
         // The group draws the illumination for the whole merged body, so it needs to know which
         // member is being touched and where.
@@ -351,6 +352,23 @@ internal class LiquifyNode(
         effectScope.apply(effects)
         graphicsLayer?.renderEffect = effectScope.renderEffect
         padding = effectScope.padding
+        syncMergeTint()
+    }
+
+    /**
+     * Pushes a changed merge tint to the group.
+     *
+     * Colour is not geometry: recolouring a member moves nothing, so no layout pass runs and
+     * [updateGroupMembership] never fires. This is the one place where a new tint is known — the
+     * effect block has just been re-evaluated — so the group is told from here instead.
+     */
+    private fun syncMergeTint() {
+        val group = joinedGroup ?: return
+        val tint = effectScope.mergeTintColor
+        if (member.tint != tint) {
+            member.tint = tint
+            group.invalidate()
+        }
     }
 
     override fun onAttach() {

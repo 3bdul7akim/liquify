@@ -35,6 +35,18 @@ internal class RuntimeShaderCacheImpl : RuntimeShaderCache {
     override fun obtainRuntimeShader(key: String, string: String): RuntimeShader =
         runtimeShaders.getOrPut(key) { RuntimeShader(string) }
 
+    /**
+     * The same, except the program text is only built on a miss.
+     *
+     * The eager form takes the source as an argument, so a caller that *generates* its program —
+     * the merged surface builds a different one per member count — pays for that generation on
+     * every call, even when the answer was compiled long ago. In a draw pass that is once per
+     * frame, for several kilobytes of text that go straight in the bin.
+     */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    fun obtainRuntimeShader(key: String, source: () -> String): RuntimeShader =
+        runtimeShaders[key] ?: RuntimeShader(source()).also { runtimeShaders[key] = it }
+
     fun clear() {
         runtimeShaders.clear()
     }
