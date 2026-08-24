@@ -55,7 +55,7 @@ open an issue, describe what you're trying to build, and I'll help as soon as I 
 ---
 
 ## Install
-
+[![Maven Central](https://img.shields.io/maven-central/v/io.github.3bdul7akim/liquify)](https://central.sonatype.com/artifact/io.github.3bdul7akim/liquify)
 ```kotlin
 dependencies {
     implementation("io.github.3bdul7akim:liquify:1.1.0")
