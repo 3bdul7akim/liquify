@@ -37,9 +37,17 @@ import com.hakim.liquify.shadow.Shadow
 import com.hakim.liquify.shadow.ShadowElement
 import kotlin.math.roundToInt
 
-private val DefaultHighlight: () -> Highlight? = { Highlight.Default }
-private val DefaultShadow: () -> Shadow? = { Shadow.Default }
 private val DefaultOnDrawBackdrop: DrawScope.(DrawScope.() -> Unit) -> Unit = { it() }
+
+/**
+ * Wraps a plain value as the stable provider the rim, shadow and inner-shadow nodes want.
+ *
+ * They are read during draw, so they are lambdas; remembering the wrapper is what keeps an element
+ * from looking changed — and rebuilding its recorded stroke — on every recomposition.
+ */
+@Composable
+private fun <T> rememberValueProvider(value: T?): (() -> T?)? =
+    remember(value) { value?.let { resolved -> { resolved } } }
 
 /**
  * Turns this element into a pane of liquid glass.
@@ -77,17 +85,26 @@ private val DefaultOnDrawBackdrop: DrawScope.(DrawScope.() -> Unit) -> Unit = { 
  * @param shape the element's outline. [com.kyant.shapes.RoundedRectangle] and
  *   [com.kyant.shapes.Capsule] give the continuous-curvature corners the material is designed
  *   around.
- * @param material the glass recipe. Ignored inside a group, which supplies its own so the merged
- *   surface stays homogeneous.
+ * @param material the glass recipe, resolved from [LocalGlassMaterial] — which an enclosing
+ *   [LiquidGlassGroup][com.hakim.liquify.group.LiquidGlassGroup] sets to its own, so a member is
+ *   made of the group's glass without being told, and an app that declared one at the root reaches
+ *   here without any call site repeating it. Naming a *different* material here overrides that for
+ *   this element alone — and takes it out of the group's merged surface, because one merged body is
+ *   one effect chain and cannot be two glasses at once. Naming the same one changes nothing, so
+ *   `material = LocalGlassMaterial.current` is always safe to write out.
  * @param backdrop overrides the inherited backdrop for this element only.
  * @param tint colour blended into the backdrop; overrides [GlassMaterial.tint] when specified.
  * @param gradientBlur ramps the blur up from nothing at the border rather than applying it evenly,
  *   and moves it above the refraction so the rim keeps a crisp lens — a frosted droplet rather than
  *   an evenly clouded one. Turns [GlassMaterial.gradientBlur] on; leave it `false` to take whatever
  *   the material already says.
- * @param highlight rim along the border, `null` for none. Ignored inside a group.
- * @param shadow drop shadow, `null` for none. Ignored inside a group.
- * @param innerShadow shadow cast inside the element, for a recessed look.
+ * @param highlight rim along the border, `null` for none. Comes from [material] by default, so an
+ *   app can state its rim once. Ignored inside a group, which draws one for the merged outline.
+ * @param shadow drop shadow, `null` for none. Also from [material] by default. A shadow that has no
+ *   colour of its own resolves one against the theme — dark ink over a light UI, and a pale halo
+ *   over a dark one, where dark ink would be invisible. Ignored inside a group.
+ * @param innerShadow shadow cast inside the element, for a recessed look. From [material] by
+ *   default, where it is `null`; theme-resolved in the same way as [shadow].
  * @param interaction an [InteractiveHighlight] to drive the touch reactions. Only needed when
  *   several elements must share one gesture; otherwise set [dragging] / [interactiveHighlight] and
  *   one is created for you.
@@ -109,9 +126,9 @@ public fun Modifier.liquify(
     backdrop: Backdrop? = null,
     tint: Color = Color.Unspecified,
     gradientBlur: Boolean = false,
-    highlight: Highlight? = Highlight.Default,
-    shadow: Shadow? = Shadow.Default,
-    innerShadow: InnerShadow? = null,
+    highlight: Highlight? = material.highlight,
+    shadow: Shadow? = material.shadow,
+    innerShadow: InnerShadow? = material.innerShadow,
     interaction: InteractiveHighlight? = null,
     dragging: Boolean = interaction != null,
     stretching: Boolean = false,
@@ -153,9 +170,9 @@ public fun Modifier.liquify(
     backdrop: Backdrop? = null,
     tint: Color = Color.Unspecified,
     gradientBlur: Boolean = false,
-    highlight: Highlight? = Highlight.Default,
-    shadow: Shadow? = Shadow.Default,
-    innerShadow: InnerShadow? = null,
+    highlight: Highlight? = material.highlight,
+    shadow: Shadow? = material.shadow,
+    innerShadow: InnerShadow? = material.innerShadow,
     interaction: InteractiveHighlight? = null,
     dragging: Boolean = interaction != null,
     stretching: Boolean = false,
@@ -165,42 +182,63 @@ public fun Modifier.liquify(
 ): Modifier {
     val group = LocalGroupDefaults.current
 
+    // Whether this call site named a glass of its own, or simply took the one already in scope.
+    //
+    // A group publishes its material as LocalGlassMaterial, and this parameter defaults to exactly
+    // that, so a member which says nothing compares equal and inherits the group's effects, its
+    // merge and its colour — while one that names another material is declaring itself a different
+    // glass. Compared by value rather than by identity: an element asking for the very material the
+    // group is already made of is not asking to be different, however it spelled it.
+    val ownsMaterial = material != LocalGlassMaterial.current
+
+    // The group this element actually takes its glass from, which is none once it has named its
+    // own: one merged surface is one effect chain, so an element that will not be made of the
+    // group's material cannot be part of its body and renders its own pane instead.
+    //
+    // Kept as the group rather than as a flag even when `merge` is `0f`, because a group that only
+    // lays its children out together may still have been handed an effects block the material
+    // cannot express, and a child that named nothing is still made of that.
+    val inheritedGroup = if (ownsMaterial) null else group
+
     // A member of a merged surface hands its rim and shadow to the group, which draws one of each
     // for the combined outline. Drawing them here as well would trace the very seam that merging
     // exists to dissolve.
-    val isMember = group != null && group.mergeAmount > 0f
+    val isMember = inheritedGroup != null && inheritedGroup.mergeAmount > 0f
 
-    val effects: BackdropEffectScope.() -> Unit = remember(group, material, tint, gradientBlur) {
-        if (group != null) {
-            val groupEffects = group.effects
-            val mergeAmount = group.mergeAmount
-            // A member's *material* is the group's — every pane of one surface is the same glass.
-            // Its **colour** is not: it is handed to the merge pass, which blends the members'
-            // tints with the very same weights it blends their distance fields with, so two
-            // differently coloured panes mix through the bridge instead of meeting at a seam.
-            // An explicit `tint` wins over the material's, exactly as it does outside a group.
-            val memberTint = if (tint.isSpecified) tint else material.tint
-            val block: BackdropEffectScope.() -> Unit = {
-                groupEffects()
-                if (mergeAmount > 0f) merge(mergeAmount)
-                mergeTint(memberTint)
+    val effects: BackdropEffectScope.() -> Unit =
+        remember(inheritedGroup, material, tint, gradientBlur) {
+            if (inheritedGroup != null) {
+                val groupEffects = inheritedGroup.effects
+                val mergeAmount = inheritedGroup.mergeAmount
+                // The glass is the group's — every pane of one surface is the same glass. Its
+                // **colour** is not: it is handed to the merge pass, which blends the members'
+                // tints with the very same weights it blends their distance fields with, so two
+                // differently coloured panes mix through the bridge instead of meeting at a seam.
+                // An explicit `tint` wins over the material's, exactly as it does outside a group.
+                val memberTint = if (tint.isSpecified) tint else material.tint
+                val block: BackdropEffectScope.() -> Unit = {
+                    groupEffects()
+                    if (mergeAmount > 0f) merge(mergeAmount)
+                    mergeTint(memberTint)
+                }
+                block
+            } else {
+                // Everything else — no group at all, or an element that named its own glass inside
+                // one — builds its stack from the material it resolved, whether that came from
+                // this call site, from ProvideGlassMaterial, or from the group it sits in.
+                var resolved = material
+                if (tint.isSpecified) resolved = resolved.copy(tint = tint)
+                if (gradientBlur) resolved = resolved.copy(gradientBlur = true)
+                val block: BackdropEffectScope.() -> Unit = { material(resolved) }
+                block
             }
-            block
-        } else {
-            var resolved = material
-            if (tint.isSpecified) resolved = resolved.copy(tint = tint)
-            if (gradientBlur) resolved = resolved.copy(gradientBlur = true)
-            val block: BackdropEffectScope.() -> Unit = { material(resolved) }
-            block
         }
-    }
 
     // Hoisted out of the conditionals below so joining or leaving a group does not change how many
     // remember slots this call occupies.
-    val highlightProvider: (() -> Highlight?)? = remember(highlight) { highlight?.let { { it } } }
-    val shadowProvider: (() -> Shadow?)? = remember(shadow) { shadow?.let { { it } } }
-    val innerShadowProvider: (() -> InnerShadow?)? =
-        remember(innerShadow) { innerShadow?.let { { it } } }
+    val highlightProvider = rememberValueProvider(highlight)
+    val shadowProvider = rememberValueProvider(shadow)
+    val innerShadowProvider = rememberValueProvider(innerShadow)
 
     // Resolved here rather than in the effects overload, because a merged member needs the object
     // to drive its own layout-based drag.
@@ -288,7 +326,9 @@ public fun Modifier.liquify(
  * Unlike the material overload, this one does **not** inherit the group's material or join its
  * merged surface automatically — an explicit effect stack means you are in control. Call
  * [merge][com.hakim.liquify.effects.merge] inside [effects] to opt in. The backdrop is still
- * resolved from context when [backdrop] is `null`.
+ * resolved from context when [backdrop] is `null`, and so are the rim, the shadow and the inner
+ * shadow: writing the effect stack by hand replaces the *material*, not the app's say over the
+ * decoration around it.
  *
  * @param shape the element's outline, as a lambda so an animating shape does not force
  *   recomposition.
@@ -296,9 +336,12 @@ public fun Modifier.liquify(
  *   `tint()`, `merge()` and friends. Order is significant: it is the order the GPU applies them in.
  * @param backdrop what is behind the glass. `null` resolves it from the enclosing group or
  *   [ProvideBackdrop].
- * @param highlight specular rim along the border. Pass `null` for none.
- * @param shadow drop shadow that lifts the glass off the content. Pass `null` for none.
- * @param innerShadow shadow cast inside the element, for a recessed look.
+ * @param highlight specular rim along the border, from [LocalGlassMaterial] by default. Pass `null`
+ *   for none.
+ * @param shadow drop shadow that lifts the glass off the content, also from [LocalGlassMaterial].
+ *   Pass `null` for none.
+ * @param innerShadow shadow cast inside the element, for a recessed look. From [LocalGlassMaterial]
+ *   as well, where it is `null` unless the app asked for one.
  * @param layerBlock transform applied to the element. Declaring scale and rotation *here* rather
  *   than with a separate `graphicsLayer` lets the backdrop invert the transform and stay anchored
  *   in screen space, so a scaling element does not drag its refraction along.
@@ -323,9 +366,13 @@ public fun Modifier.liquify(
     shape: () -> Shape,
     effects: BackdropEffectScope.() -> Unit,
     backdrop: Backdrop? = null,
-    highlight: (() -> Highlight?)? = DefaultHighlight,
-    shadow: (() -> Shadow?)? = DefaultShadow,
-    innerShadow: (() -> InnerShadow?)? = null,
+    // Writing the effect stack by hand replaces the *material* — not the decoration around it, and
+    // not the app's say over it. An app that declared unshadowed glass once should get unshadowed
+    // glass here too, which it did not while these were hard-wired constants.
+    highlight: (() -> Highlight?)? = rememberValueProvider(LocalGlassMaterial.current.highlight),
+    shadow: (() -> Shadow?)? = rememberValueProvider(LocalGlassMaterial.current.shadow),
+    innerShadow: (() -> InnerShadow?)? =
+        rememberValueProvider(LocalGlassMaterial.current.innerShadow),
     layerBlock: (GraphicsLayerScope.() -> Unit)? = null,
     exportedBackdrop: LayerBackdrop? = null,
     onDrawBehind: (DrawScope.() -> Unit)? = null,
@@ -353,8 +400,19 @@ public fun Modifier.liquify(
         touch.stretches = dragging && stretching
     }
 
-    val shapeProvider = ShapeProvider(shape)
-    val nodeState = GlassNodeState()
+    // Remembered rather than rebuilt. Both are compared by identity when the modifier elements
+    // update, so a fresh pair on every recomposition made every glass element look changed: the
+    // effect chain was reapplied and the backdrop, rim and shadow nodes all invalidated their
+    // draw — for a recomposition that may never have touched the glass. Typing into a text field
+    // beside a row of glass buttons rebuilt all of them, on every keystroke.
+    //
+    // ShapeProvider also memoises the outline, and that cache is worth keeping across
+    // recompositions for the very same reason.
+    val shapeProvider = remember(shape) { ShapeProvider(shape) }
+    val nodeState = remember { GlassNodeState() }
+    // Read once here and handed to the two shadow nodes, which are not composables and cannot look
+    // it up themselves. A theme switch recomposes this call, and the nodes re-record in the new ink.
+    val darkTheme = isGlassDarkTheme()
     val effectiveLayerBlock: (GraphicsLayerScope.() -> Unit)? =
         if (touch != null && dragging) {
             {
@@ -368,14 +426,24 @@ public fun Modifier.liquify(
         .then(if (effectiveLayerBlock != null) Modifier.graphicsLayer(effectiveLayerBlock) else Modifier)
         .then(
             if (innerShadow != null) {
-                InnerShadowElement(shapeProvider, innerShadow, nodeState)
+                InnerShadowElement(shapeProvider, innerShadow, nodeState, darkTheme)
             } else {
                 Modifier
             }
         )
-        .then(if (shadow != null) ShadowElement(shapeProvider, shadow, nodeState) else Modifier)
         .then(
-            if (highlight != null) HighlightElement(shapeProvider, highlight, nodeState) else Modifier
+            if (shadow != null) {
+                ShadowElement(shapeProvider, shadow, nodeState, darkTheme)
+            } else {
+                Modifier
+            }
+        )
+        .then(
+            if (highlight != null) {
+                HighlightElement(shapeProvider, highlight, nodeState, darkTheme)
+            } else {
+                Modifier
+            }
         )
         .then(
             LiquifyElement(

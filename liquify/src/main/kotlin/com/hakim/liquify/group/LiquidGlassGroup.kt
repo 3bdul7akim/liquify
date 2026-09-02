@@ -15,9 +15,12 @@ import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Paint
+import androidx.compose.ui.graphics.RenderEffect
 import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.drawscope.ContentDrawScope
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.isSpecified
+import androidx.compose.ui.graphics.takeOrElse
 import androidx.compose.ui.graphics.layer.CompositingStrategy
 import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.graphics.layer.drawLayer
@@ -57,14 +60,19 @@ import com.hakim.liquify.internal.mergeSilhouetteShader
 import com.hakim.liquify.internal.mergeSilhouetteShaderKey
 import com.hakim.liquify.internal.recordLayer
 import com.hakim.liquify.internal.setRuntimeShader
+import com.hakim.liquify.isGlassDarkTheme
 import com.hakim.liquify.isRenderEffectSupported
 import com.hakim.liquify.isRuntimeShaderSupported
+import com.hakim.liquify.material.GlassMaterial
+import com.hakim.liquify.material.LocalGlassMaterial
 import com.hakim.liquify.material.rememberGlassEffects
 import com.hakim.liquify.shadow.Shadow
 import kotlin.math.PI
 import kotlin.math.ceil
+import kotlin.math.cos
 import kotlin.math.floor
 import kotlin.math.roundToInt
+import kotlin.math.sin
 
 private val UnitScale = Offset(1f, 1f)
 
@@ -109,20 +117,31 @@ private val DefaultShadow: () -> Shadow? = { Shadow.Default }
  * @param effects the material of the merged surface, inherited by every member. Defaults to the
  *   material from [LocalGlassMaterial][com.hakim.liquify.material.LocalGlassMaterial], so a group
  *   follows an app-wide glass change like everything else.
+ * @param material the glass the whole surface is made of. It is published to the subtree through
+ *   [LocalGlassMaterial], so every member picks it up without being told — and so does a child that
+ *   is not part of the merged surface at all. Defaults to the material already in scope, which is
+ *   what lets an app-wide change reach a group like everything else. A child that names its own
+ *   material overrides this for itself; for a *merged* member that override is its colour, since
+ *   the members of one body of glass are by definition made of the same glass.
+ * @param effects the effect stack of the merged surface. Derived from [material] by default; pass
+ *   one explicitly only for a stack the material cannot express.
  * @param merge how strongly members fuse, relative to their own size. `1f` starts bridging at
  *   roughly half an element's short side; `0f` disables merging entirely.
  * @param highlight rim of the merged silhouette, rendered inside the merge program rather than as
- *   a stroke, since the combined outline has no [androidx.compose.ui.graphics.Outline].
- * @param shadow shadow cast by the combined silhouette.
+ *   a stroke, since the combined outline has no [androidx.compose.ui.graphics.Outline]. Taken from
+ *   [material] by default; `null` for none.
+ * @param shadow shadow cast by the combined silhouette. Taken from [material] by default; `null`
+ *   for none.
  */
 @Composable
 public fun LiquidGlassGroup(
     modifier: Modifier = Modifier,
     backdrop: Backdrop? = null,
-    effects: BackdropEffectScope.() -> Unit = rememberGlassEffects(),
+    material: GlassMaterial = LocalGlassMaterial.current,
+    effects: BackdropEffectScope.() -> Unit = rememberGlassEffects(material),
     merge: Float = 1f,
-    highlight: (() -> Highlight?)? = DefaultHighlight,
-    shadow: (() -> Shadow?)? = DefaultShadow,
+    highlight: (() -> Highlight?)? = rememberValueProvider(material.highlight),
+    shadow: (() -> Shadow?)? = rememberValueProvider(material.shadow),
     contentAlignment: Alignment = Alignment.TopStart,
     content: @Composable BoxScope.() -> Unit
 ) {
@@ -135,11 +154,16 @@ public fun LiquidGlassGroup(
     val defaults = remember(resolvedBackdrop, effects, merge) {
         GroupDefaults(backdrop = resolvedBackdrop, effects = effects, mergeAmount = merge)
     }
+    val darkTheme = isGlassDarkTheme()
 
     CompositionLocalProvider(
         LocalLiquidGlassGroup provides state,
         LocalGroupDefaults provides defaults,
-        LocalBackdrop provides resolvedBackdrop
+        LocalBackdrop provides resolvedBackdrop,
+        // Every member of one surface is the same glass, so the group states it once here instead
+        // of each child repeating it. A child that passes `material` explicitly still wins, and
+        // one that draws its own pane — outside the merge, or with `merge = 0f` — renders in it.
+        LocalGlassMaterial provides material
     ) {
         Box(
             modifier = modifier.liquidGlassGroup(
@@ -147,7 +171,8 @@ public fun LiquidGlassGroup(
                 resolvedBackdrop,
                 effects,
                 highlight,
-                shadow
+                shadow,
+                darkTheme
             ),
             contentAlignment = contentAlignment,
             content = content
@@ -156,29 +181,51 @@ public fun LiquidGlassGroup(
 }
 
 /**
+ * Wraps a plain value as the stable provider the group's draw node wants.
+ *
+ * The rim and the shadow are read during draw, so they are lambdas; remembering the wrapper is what
+ * keeps a group from looking changed — and rebuilding its effect chain — on every recomposition.
+ */
+@Composable
+private fun <T> rememberValueProvider(value: T?): (() -> T?)? =
+    remember(value) { value?.let { resolved -> { resolved } } }
+
+/**
  * The drawing half of [LiquidGlassGroup], for layouts that cannot be a `Box`.
  *
  * You must still provide [LocalLiquidGlassGroup] with the same [state] around the children,
  * otherwise their `merge()` calls have nothing to register with.
+ *
+ * **This is a plain modifier, not a composable, so nothing here is resolved from context.** The
+ * [LiquidGlassGroup] composable reads the material, the rim, the shadow and the theme for you and
+ * passes them down; reaching for this one instead means passing them yourself — typically
+ * `rememberGlassEffects()`, `LocalGlassMaterial.current.highlight` and `.shadow`, and
+ * [isGlassDarkTheme] — and providing [LocalGlassMaterial] around the children so they inherit the
+ * same glass. The defaults below are the neutral ones, not the app's.
+ *
+ * @param darkTheme what a [Shadow] with an unspecified colour resolves to.
  */
 public fun Modifier.liquidGlassGroup(
     state: LiquidGlassGroupState,
     backdrop: Backdrop,
     effects: (BackdropEffectScope.() -> Unit)? = null,
     highlight: (() -> Highlight?)? = DefaultHighlight,
-    shadow: (() -> Shadow?)? = DefaultShadow
-): Modifier = this then LiquidGlassGroupElement(state, backdrop, effects, highlight, shadow)
+    shadow: (() -> Shadow?)? = DefaultShadow,
+    darkTheme: Boolean = false
+): Modifier =
+    this then LiquidGlassGroupElement(state, backdrop, effects, highlight, shadow, darkTheme)
 
 private class LiquidGlassGroupElement(
     val state: LiquidGlassGroupState,
     val backdrop: Backdrop,
     val effects: (BackdropEffectScope.() -> Unit)?,
     val highlight: (() -> Highlight?)?,
-    val shadow: (() -> Shadow?)?
+    val shadow: (() -> Shadow?)?,
+    val darkTheme: Boolean
 ) : ModifierNodeElement<LiquidGlassGroupNode>() {
 
     override fun create(): LiquidGlassGroupNode =
-        LiquidGlassGroupNode(state, backdrop, effects, highlight, shadow)
+        LiquidGlassGroupNode(state, backdrop, effects, highlight, shadow, darkTheme)
 
     override fun update(node: LiquidGlassGroupNode) {
         if (node.state !== state) {
@@ -190,6 +237,11 @@ private class LiquidGlassGroupElement(
         node.effects = effects
         node.highlight = highlight
         node.shadow = shadow
+        if (node.darkTheme != darkTheme) {
+            node.darkTheme = darkTheme
+            // The recorded shadow is painted in the resolved ink, so it has to be laid down again.
+            node.invalidateShadow()
+        }
         node.invalidateDraw()
     }
 
@@ -200,6 +252,7 @@ private class LiquidGlassGroupElement(
         properties["effects"] = effects
         properties["highlight"] = highlight
         properties["shadow"] = shadow
+        properties["darkTheme"] = darkTheme
     }
 
     override fun equals(other: Any?): Boolean {
@@ -209,7 +262,8 @@ private class LiquidGlassGroupElement(
             backdrop == other.backdrop &&
             effects == other.effects &&
             highlight == other.highlight &&
-            shadow == other.shadow
+            shadow == other.shadow &&
+            darkTheme == other.darkTheme
     }
 
     override fun hashCode(): Int {
@@ -218,6 +272,7 @@ private class LiquidGlassGroupElement(
         result = 31 * result + (effects?.hashCode() ?: 0)
         result = 31 * result + (highlight?.hashCode() ?: 0)
         result = 31 * result + (shadow?.hashCode() ?: 0)
+        result = 31 * result + darkTheme.hashCode()
         return result
     }
 }
@@ -227,7 +282,8 @@ private class LiquidGlassGroupNode(
     var backdrop: Backdrop,
     var effects: (BackdropEffectScope.() -> Unit)?,
     var highlight: (() -> Highlight?)?,
-    var shadow: (() -> Shadow?)?
+    var shadow: (() -> Shadow?)?,
+    var darkTheme: Boolean
 ) : DrawModifierNode, GlobalPositionAwareModifierNode, ObserverModifierNode, Modifier.Node() {
 
     override val shouldAutoInvalidate: Boolean = false
@@ -243,6 +299,36 @@ private class LiquidGlassGroupNode(
     /** Everything the recorded shadow depends on, so an unchanged one can simply be redrawn. */
     private var shadowFingerprint = Long.MIN_VALUE
 
+    /**
+     * The merged program in use, and the variant it was resolved for.
+     *
+     * Looking it up through the cache every frame meant building a lookup key and allocating a
+     * closure for the generator that was not going to run. Both only change when a member joins or
+     * leaves, or when the first coloured member appears.
+     */
+    private var glassShader: RuntimeShader? = null
+    private var glassMemberCount = -1
+    private var glassTinted = false
+
+    /**
+     * Everything last uploaded to that program, folded into one value.
+     *
+     * A group is redrawn whenever anything behind it moves, and until now each of those frames
+     * rewrote every member's geometry, the lens parameters and the rim — around fifty uniform
+     * writes for a full group, each one discarding the native shader the last frame had built.
+     * A page scrolling behind a settled group changes none of them.
+     */
+    private var glassUniforms = Long.MIN_VALUE
+
+    /**
+     * The finished effect chain, kept between frames.
+     *
+     * A runtime-shader render effect takes a *copy* of the shader's uniforms when it is built, so
+     * this may only be reused while both the chain in front of it and those uniforms are unchanged
+     * — which is precisely what the fingerprint above establishes.
+     */
+    private var composedRenderEffect: RenderEffect? = null
+
     private var glassLayer: GraphicsLayer? = null
     private var shadowBlurLayer: GraphicsLayer? = null
     private var shadowLayer: GraphicsLayer? = null
@@ -252,6 +338,30 @@ private class LiquidGlassGroupNode(
 
     private var appliedShadowRadius = Float.NaN
 
+    /**
+     * Where the glass layer is being recorded, for [recordGlassBlock].
+     *
+     * The recording block is allocated once and reads these, rather than being a fresh closure over
+     * the frame's locals every time the group draws.
+     */
+    private var recordLeft = 0f
+    private var recordTop = 0f
+
+    private val recordGlassBlock: DrawScope.() -> Unit = {
+        val scope = this
+        val canvas = drawContext.canvas
+        val left = recordLeft
+        val top = recordTop
+        canvas.translate(-left, -top)
+        with(backdrop) { scope.drawBackdrop(scope, groupCoordinates, null) }
+        canvas.translate(left, top)
+    }
+
+    /** Forces the recorded shadow to be laid down again on the next draw. */
+    fun invalidateShadow() {
+        shadowFingerprint = Long.MIN_VALUE
+    }
+
     override fun ContentDrawScope.draw() {
         val glassLayer = glassLayer
         if (glassLayer == null || !isRuntimeShaderSupported()) {
@@ -259,9 +369,12 @@ private class LiquidGlassGroupNode(
         }
 
         // Zero-sized members would still contribute a blob to the field, so they are dropped
-        // rather than clamped.
+        // rather than clamped. Indexed rather than a for-in, which would allocate an iterator on
+        // every frame the group draws.
         active.clear()
-        for (member in state.members) {
+        val members = state.members
+        for (i in 0 until members.size) {
+            val member = members[i]
             if (member.halfWidth > 0f && member.halfHeight > 0f) {
                 active += member
                 if (active.size == MAX_MERGED_ELEMENTS) break
@@ -313,6 +426,7 @@ private class LiquidGlassGroupNode(
             Size(contentWidth, contentHeight),
             layoutDirection
         )
+        var chainChanged = false
         if (scopeChanged || effectsDirty || effectsBlock !== appliedEffects) {
             observeReads {
                 effectScope.resetLens()
@@ -320,6 +434,7 @@ private class LiquidGlassGroupNode(
             }
             appliedEffects = effectsBlock
             effectsDirty = false
+            chainChanged = true
         }
 
         val padding = effectScope.padding
@@ -342,53 +457,149 @@ private class LiquidGlassGroupNode(
         }
 
         val highlight = highlight?.invoke()
-        val glassShader = shaderCache.obtainRuntimeShader(mergeGlassShaderKey(count, tinted)) {
-            mergeGlassShader(count, tinted)
-        }
-        glassShader.apply {
-            writeMemberUniforms(active, count, density, tinted)
-            setFloatUniform("offset", layerLeft, layerTop)
-            setFloatUniform("aaWidth", 1f)
-            setFloatUniform("refractionHeight", effectScope.refractionHeight)
-            // Negative so the backdrop is pulled inwards, matching the single-element lens.
-            setFloatUniform("refractionAmount", -effectScope.refractionAmount)
-            setFloatUniform("depthEffect", effectScope.depthEffect)
-            if (highlight != null && highlight.width.value > 0f) {
-                val style = highlight.style
-                setColorUniform("highlightColor", style.color.copy(alpha = 1f))
-                setFloatUniform("highlightIntensity", style.color.alpha * highlight.alpha)
-                setFloatUniform(
-                    "highlightWidth",
-                    highlight.width.toPx() * 2f + highlight.blurRadius.toPx()
-                )
-                setFloatUniform("highlightAngle", style.lightAngleRadians())
-                setFloatUniform("highlightFalloff", style.lightFalloff())
-            } else {
-                setColorUniform("highlightColor", Color.White)
-                setFloatUniform("highlightIntensity", 0f)
-                setFloatUniform("highlightWidth", 0f)
-                setFloatUniform("highlightAngle", 0f)
-                setFloatUniform("highlightFalloff", 1f)
-            }
 
+        // The program only depends on how many members there are and whether any of them carries a
+        // colour, so it is resolved through the cache when that changes and held on to otherwise.
+        var shader = glassShader
+        if (shader == null || glassMemberCount != count || glassTinted != tinted) {
+            shader = shaderCache.obtainRuntimeShader(mergeGlassShaderKey(count, tinted)) {
+                mergeGlassShader(count, tinted)
+            }
+            glassShader = shader
+            glassMemberCount = count
+            glassTinted = tinted
+            // A different program holds different uniforms, and the chain around it has to be
+            // rebuilt whatever else happens this frame.
+            glassUniforms = Long.MIN_VALUE
+            chainChanged = true
+        }
+
+        val fingerprint =
+            glassUniformFingerprint(count, tinted, layerLeft, layerTop, highlight, density)
+        if (fingerprint != glassUniforms) {
+            glassUniforms = fingerprint
+            shader.writeMemberUniforms(active, count, density, tinted)
+            shader.writeSurfaceUniforms(layerLeft, layerTop, highlight, density)
+            // The effect below copies the uniforms as they are now, so it is no longer the one
+            // this frame needs.
+            chainChanged = true
         }
 
         drawMergedShadow(count, layerLeft, layerTop, layerWidth, layerHeight, density)
 
-        recordLayer(glassLayer, density, IntSize(layerWidth, layerHeight)) {
-            val canvas = drawContext.canvas
-            canvas.translate(-layerLeft, -layerTop)
-            with(backdrop) {
-                drawBackdrop(density, this@LiquidGlassGroupNode.groupCoordinates, null)
-            }
-            canvas.translate(layerLeft, layerTop)
+        recordLeft = layerLeft
+        recordTop = layerTop
+        recordLayer(glassLayer, density, IntSize(layerWidth, layerHeight), recordGlassBlock)
+
+        var renderEffect = composedRenderEffect
+        if (chainChanged || renderEffect == null) {
+            renderEffect = effectScope.renderEffect.chain(RuntimeShaderEffect(shader, "content"))
+            composedRenderEffect = renderEffect
         }
-        glassLayer.renderEffect =
-            effectScope.renderEffect.chain(RuntimeShaderEffect(glassShader, "content"))
+        glassLayer.renderEffect = renderEffect
         glassLayer.topLeft = IntOffset(layerLeft.roundToInt(), layerTop.roundToInt())
         drawLayer(glassLayer)
 
         drawContent()
+    }
+
+    /**
+     * Everything written to the merged glass program, folded into one value.
+     *
+     * A stretching member deforms through a layer scale that layout never reports, so its geometry
+     * here would look unchanged while its surface grows — the press and the travel that drive that
+     * scale stand in for it, and only for the members that actually stretch.
+     */
+    private fun glassUniformFingerprint(
+        count: Int,
+        tinted: Boolean,
+        layerLeft: Float,
+        layerTop: Float,
+        highlight: Highlight?,
+        density: Density
+    ): Long {
+        var hash = count * 31L + if (tinted) 7L else 3L
+        hash = hash * 31L + layerLeft.toRawBits()
+        hash = hash * 31L + layerTop.toRawBits()
+        hash = hash * 31L + effectScope.refractionHeight.toRawBits()
+        hash = hash * 31L + effectScope.refractionAmount.toRawBits()
+        hash = hash * 31L + effectScope.depthEffect.toRawBits()
+        hash = hash * 31L + density.density.toRawBits()
+        hash = hash * 31L + (highlight?.hashCode() ?: 0)
+        // A rim style that resolves its colour against the theme hashes the same in both.
+        hash = hash * 31L + if (darkTheme) 1L else 0L
+        for (i in 0 until count) {
+            val member = active[i]
+            hash = hash * 31L + member.centerX.toRawBits()
+            hash = hash * 31L + member.centerY.toRawBits()
+            hash = hash * 31L + member.halfWidth.toRawBits()
+            hash = hash * 31L + member.halfHeight.toRawBits()
+            val radii = member.cornerRadii
+            for (corner in 0..3) hash = hash * 31L + radii[corner].toRawBits()
+            hash = hash * 31L + member.mergeRadius.toRawBits()
+            hash = hash * 31L + member.tint.hashCode()
+            val interaction = member.interaction
+            if (interaction != null && interaction.stretches) {
+                hash = hash * 31L + interaction.pressProgress.toRawBits()
+                val offset = interaction.offset
+                hash = hash * 31L + offset.x.toRawBits()
+                hash = hash * 31L + offset.y.toRawBits()
+            }
+        }
+        return hash
+    }
+
+    /**
+     * Uploads the merged surface's own parameters: where the layer sits, the lens, and the rim.
+     *
+     * Only reachable past the [isRuntimeShaderSupported] guard at the top of [draw].
+     */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    private fun RuntimeShader.writeSurfaceUniforms(
+        layerLeft: Float,
+        layerTop: Float,
+        highlight: Highlight?,
+        density: Density
+    ) {
+        setFloatUniform("offset", layerLeft, layerTop)
+        setFloatUniform("aaInverse", 1f)
+
+        val refractionHeight = effectScope.refractionHeight
+        setFloatUniform("refractionHeight", refractionHeight)
+        setFloatUniform(
+            "refractionHeightInverse",
+            if (refractionHeight > 0f) 1f / refractionHeight else 0f
+        )
+        // Negative so the backdrop is pulled inwards, matching the single-element lens.
+        setFloatUniform("refractionAmount", -effectScope.refractionAmount)
+        setFloatUniform("depthEffect", effectScope.depthEffect)
+
+        if (highlight != null && highlight.width.value > 0f) {
+            // A style that flips with the theme resolves here too. The merged silhouette carries
+            // one rim colour — it has no quadrants of its own to alternate across, and inventing
+            // some would draw a seam through the very bridges merging exists to dissolve — so a
+            // two-toned style contributes its leading tone and reads as a plain directional rim.
+            val style = highlight.style.resolvedFor(darkTheme)
+            setColorUniform("highlightColor", style.color.copy(alpha = 1f))
+            setFloatUniform("highlightIntensity", style.color.alpha * highlight.alpha)
+            with(density) {
+                setFloatUniform(
+                    "highlightWidth",
+                    highlight.width.toPx() * 2f + highlight.blurRadius.toPx()
+                )
+            }
+            // Resolved here rather than in the shader, where it cost a cos() and a sin() on every
+            // pixel of the merged surface to arrive at the same vector.
+            val angle = style.lightAngleRadians()
+            setFloatUniform("highlightNormal", cos(angle), sin(angle))
+            setFloatUniform("highlightFalloff", style.lightFalloff())
+        } else {
+            setColorUniform("highlightColor", Color.White)
+            setFloatUniform("highlightIntensity", 0f)
+            setFloatUniform("highlightWidth", 0f)
+            setFloatUniform("highlightNormal", 1f, 0f)
+            setFloatUniform("highlightFalloff", 1f)
+        }
     }
 
     /**
@@ -480,6 +691,9 @@ private class LiquidGlassGroupNode(
         val blurLayer = shadowBlurLayer ?: return
         val compositeLayer = shadowLayer ?: return
 
+        // An unspecified colour is the material saying "whatever suits the theme": black ink over a
+        // light UI, and a pale halo over a dark one, where black ink would simply not be there.
+        val shadowColor = shadow.color.takeOrElse { Shadow.defaultColor(darkTheme) }
         val radius = shadow.radius.toPx()
         val offsetX = shadow.offset.x.toPx()
         val offsetY = shadow.offset.y.toPx()
@@ -495,7 +709,7 @@ private class LiquidGlassGroupNode(
         // full-size layers recorded again. Alpha and blend mode stay out of the fingerprint: they
         // are layer properties, applied below without touching the recording.
         val fingerprint = shadowFingerprint(
-            count, radius, offsetX, offsetY, shadow.color, shadowLeft, shadowTop,
+            count, radius, offsetX, offsetY, shadowColor, shadowLeft, shadowTop,
             shadowWidth, shadowHeight
         )
         if (fingerprint != shadowFingerprint) {
@@ -507,9 +721,9 @@ private class LiquidGlassGroupNode(
                 mergeSilhouetteShader(count)
             }.apply {
                 writeMemberUniforms(active, count, density, tinted = false)
-                setFloatUniform("aaWidth", 1f)
-                setColorUniform("color", shadow.color.copy(alpha = 1f))
-                setFloatUniform("colorAlpha", shadow.color.alpha)
+                setFloatUniform("aaInverse", 1f)
+                setColorUniform("color", shadowColor.copy(alpha = 1f))
+                setFloatUniform("colorAlpha", shadowColor.alpha)
                 // Displaced by the shadow offset: the shadow falls where the shape would be if it
                 // were that much further from the surface.
                 setFloatUniform("offset", shadowLeft - offsetX, shadowTop - offsetY)
@@ -518,7 +732,7 @@ private class LiquidGlassGroupNode(
                 mergeSilhouetteShader(count)
             }.apply {
                 writeMemberUniforms(active, count, density, tinted = false)
-                setFloatUniform("aaWidth", 1f)
+                setFloatUniform("aaInverse", 1f)
                 setColorUniform("color", Color.White)
                 setFloatUniform("colorAlpha", 1f)
                 setFloatUniform("offset", shadowLeft, shadowTop)
@@ -662,6 +876,11 @@ private class LiquidGlassGroupNode(
         appliedEffects = null
         effectsDirty = true
         shadowFingerprint = Long.MIN_VALUE
+        // The programs these describe went with the cache.
+        glassShader = null
+        glassMemberCount = -1
+        glassUniforms = Long.MIN_VALUE
+        composedRenderEffect = null
     }
 }
 
@@ -669,6 +888,7 @@ private class LiquidGlassGroupNode(
 private fun HighlightStyle.lightAngleRadians(): Float = when (this) {
     is HighlightStyle.Default -> angle.degreesToRadians()
     is HighlightStyle.Ambient -> angle.degreesToRadians()
+    is HighlightStyle.TwSe -> angle.degreesToRadians()
     else -> 45f.degreesToRadians()
 }
 
@@ -681,6 +901,7 @@ private fun HighlightStyle.lightFalloff(): Float = when (this) {
     is HighlightStyle.Ambient -> falloff
     is HighlightStyle.Plain -> 0f
     is HighlightStyle.Dynamic -> falloff
+    is HighlightStyle.TwSe -> falloff
     else -> 1f
 }
 

@@ -88,6 +88,15 @@ internal class LiquifyElement(
     )
 
     override fun update(node: LiquifyNode) {
+        // Only these three describe the effect chain. Rebuilding it for any other change meant a
+        // caller with an inline `onDrawSurface` — a pressed-state wash, say — re-ran its whole
+        // effects block, recompiled its uniforms and reallocated its render effects on every
+        // recomposition of the screen around it. The draw itself is still invalidated, by the
+        // automatic invalidation this node opts into.
+        val rebuildEffects = node.effects !== effects ||
+            node.shapeProvider !== shapeProvider ||
+            node.backdrop != backdrop
+
         node.backdrop = backdrop
         node.shapeProvider = shapeProvider
         node.effects = effects
@@ -105,7 +114,7 @@ internal class LiquifyElement(
         node.onDrawSurface = onDrawSurface
         node.onDrawFront = onDrawFront
         node.interaction = interaction
-        node.invalidateDrawCache()
+        if (rebuildEffects) node.invalidateDrawCache()
     }
 
     override fun InspectorInfo.inspectableProperties() {
@@ -188,6 +197,14 @@ internal class LiquifyNode(
 
     private val member = GlassMember()
     private var joinedGroup: LiquidGlassGroupState? = null
+
+    /**
+     * Scratch for the radii handed to the group.
+     *
+     * This resolves on every layout pass, which for a dragged member is every frame, and the group
+     * copies the values out immediately — so there is nothing for a fresh array to carry.
+     */
+    private val cornerRadiiScratch = FloatArray(4)
 
     private val recordBackdropBlock: DrawScope.() -> Unit = {
         val canvas = drawContext.canvas
@@ -308,12 +325,14 @@ internal class LiquifyNode(
         // The group draws the illumination for the whole merged body, so it needs to know which
         // member is being touched and where.
         member.interaction = interaction
+        val hasRadii = shapeProvider.innerShape
+            .resolveCornerRadii(size, requireLayoutDirection(), density, cornerRadiiScratch)
         val moved = member.setGeometry(
             left = topLeft.x,
             top = topLeft.y,
             width = size.width,
             height = size.height,
-            radii = shapeProvider.innerShape.resolveCornerRadii(size, requireLayoutDirection(), density)
+            radii = if (hasRadii) cornerRadiiScratch else null
         )
 
         if (joinedGroup !== group) {

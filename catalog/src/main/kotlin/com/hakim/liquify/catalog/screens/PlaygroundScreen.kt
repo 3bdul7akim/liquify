@@ -60,6 +60,7 @@ fun PlaygroundScreen(backdrop: Backdrop) {
     var stretching by remember { mutableStateOf(false) }
     var dispersion by remember { mutableStateOf(false) }
     var ambientRim by remember { mutableStateOf(false) }
+    var twSeRim by remember { mutableStateOf(false) }
     var gradient by remember { mutableStateOf(false) }
 
     val blurDp = blurRadius * 40f
@@ -100,10 +101,13 @@ fun PlaygroundScreen(backdrop: Backdrop) {
                     },
                     backdrop = backdrop,
                     highlight = {
-                        if (ambientRim) {
-                            Highlight(width = 1.dp, style = HighlightStyle.Ambient)
-                        } else {
-                            Highlight.Default
+                        when {
+                            // Follows the system theme on its own: white quadrants over the dark
+                            // wallpaper, black ones in light mode. Flip the device theme with this
+                            // on and the rim inverts without anything here changing.
+                            twSeRim -> Highlight.TwSe
+                            ambientRim -> Highlight(width = 1.dp, style = HighlightStyle.Ambient)
+                            else -> Highlight.Default
                         }
                     },
                     shadow = { Shadow.Default },
@@ -191,6 +195,7 @@ fun PlaygroundScreen(backdrop: Backdrop) {
                 ToggleRow(cardBackdrop, "depthEffect", depth) { depth = !depth }
                 ToggleRow(cardBackdrop, "chromaticAberration", dispersion) { dispersion = !dispersion }
                 ToggleRow(cardBackdrop, "Ambient rim", ambientRim) { ambientRim = !ambientRim }
+                ToggleRow(cardBackdrop, "TwSe rim", twSeRim) { twSeRim = !twSeRim }
                 ToggleRow(cardBackdrop, "Stretching", stretching) { stretching = !stretching }
             }
         }

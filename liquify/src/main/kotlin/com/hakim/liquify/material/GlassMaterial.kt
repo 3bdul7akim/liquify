@@ -15,8 +15,11 @@ import com.hakim.liquify.effects.merge
 import com.hakim.liquify.effects.opacity
 import com.hakim.liquify.effects.tint
 import com.hakim.liquify.effects.vibrancy
+import com.hakim.liquify.highlight.Highlight
 import com.hakim.liquify.material.GlassMaterial.Companion.Clear
 import com.hakim.liquify.material.GlassMaterial.Companion.Regular
+import com.hakim.liquify.shadow.InnerShadow
+import com.hakim.liquify.shadow.Shadow
 
 /**
  * A ready-made recipe for the whole effect stack, so most call sites need one line instead of five.
@@ -42,6 +45,13 @@ import com.hakim.liquify.material.GlassMaterial.Companion.Regular
  *   way a frosted droplet is cloudy in the middle and clear at its edge. The ramp is a fixed short
  *   distance and is independent of [refractionHeight]; switching this on also moves the blur to
  *   *after* the refraction, so the rim keeps a crisp lens.
+ * @param highlight the specular rim, or `null` for a pane with no catch of light along its border.
+ *   Part of the material because a thicker glass carries a wider rim, and because an app that wants
+ *   its glass unrimmed should be able to say so once rather than at every call site.
+ * @param shadow the drop shadow, or `null` for glass that sits flat on the content. Its colour is
+ *   [Color.Unspecified] by default, which resolves against the theme when it is drawn — see
+ *   [Shadow.defaultColor].
+ * @param innerShadow a shadow cast inside the element for a recessed look, `null` by default.
  */
 @Immutable
 public data class GlassMaterial(
@@ -53,7 +63,10 @@ public data class GlassMaterial(
     @param:FloatRange(from = 0.0, to = 1.0) val opacity: Float = 1f,
     val depthEffect: Boolean = true,
     val chromaticAberration: Boolean = false,
-    val gradientBlur: Boolean = false
+    val gradientBlur: Boolean = false,
+    val highlight: Highlight? = Highlight.Default,
+    val shadow: Shadow? = Shadow.Default,
+    val innerShadow: InnerShadow? = null
 ) {
     public companion object {
 
@@ -78,7 +91,8 @@ public data class GlassMaterial(
             saturation = 1f,
             tint = Color.Unspecified,
             opacity = 1f,
-            depthEffect = true
+            depthEffect = true,
+            highlight = Highlight.Default
         )
 
         /** Heavily frosted and opaque, for large surfaces such as sheets and sidebars. */
@@ -89,7 +103,8 @@ public data class GlassMaterial(
             refractionAmount = 40.dp,
             saturation = 1.6f,
             tint = Color.White.copy(0.01f),
-            opacity = 1f
+            opacity = 1f,
+            highlight = Highlight.TwSe
         )
     }
 }
@@ -100,6 +115,11 @@ public data class GlassMaterial(
  * ```
  * effects = { material(GlassMaterial.Regular) }
  * ```
+ *
+ * [GlassMaterial.highlight], [GlassMaterial.shadow] and [GlassMaterial.innerShadow] are **not**
+ * applied here, and cannot be: an effect block builds the chain the backdrop is run through, while
+ * those three are drawn by nodes of their own around it. `liquify` reads them from the material for
+ * you; a hand-written effects block passes them to the modifier itself.
  *
  * @param mergeAmount blend strength passed on to [merge][merge]. Leave
  *   it at `0f` unless the element sits in a

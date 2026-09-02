@@ -64,6 +64,9 @@ uniform float2 size;
 uniform float2 offset;
 uniform float4 cornerRadii;
 uniform float refractionHeight;
+// 1 / refractionHeight, folded on the CPU. Every pixel inside the band divided by it to arrive at
+// a value that is the same for all of them; a reciprocal multiply is several times cheaper.
+uniform float refractionHeightInverse;
 uniform float refractionAmount;
 uniform float depthEffect;
 
@@ -74,18 +77,33 @@ half4 main(float2 coord) {
     float2 centeredCoord = (coord + offset) - halfSize;
     float radius = radiusAt(centeredCoord, cornerRadii);
 
+    // Conservative interior test, before the field itself. Rounding only ever pulls the boundary
+    // inward, and never by more than the corner radius, so a pixel this far inside the axis-aligned
+    // bounds is certainly past the band. Three ALU ops here let every deep-interior pixel skip the
+    // SDF's length() — on a large pane that is nearly all of them, and for a plain rectangle this
+    // test is exact rather than merely conservative.
+    float2 inset = halfSize - abs(centeredCoord);
+    if (min(inset.x, inset.y) >= refractionHeight + radius) {
+        return content.eval(coord);
+    }
+
     float sd = sdRoundedRect(centeredCoord, halfSize, radius);
     if (-sd >= refractionHeight) {
         return content.eval(coord);
     }
     sd = min(sd, 0.0);
 
-    float d = circleMap(1.0 - -sd / refractionHeight) * refractionAmount;
+    // sd is negative here, so 1 - (-sd)/h is 1 + sd * (1/h) — the same value without the divide.
+    float d = circleMap(1.0 + sd * refractionHeightInverse) * refractionAmount;
     float gradRadius = min(radius * 1.5, min(halfSize.x, halfSize.y));
-    float2 grad = normalize(
-        gradSdRoundedRect(centeredCoord, halfSize, gradRadius) +
-        depthEffect * normalize(centeredCoord)
-    );
+    // gradSdRoundedRect already returns a unit vector — both of its branches do — so without a
+    // depth term the outer normalize() is a no-op and the inner one is computed only to be
+    // multiplied by zero. depthEffect is a uniform, so this branch is coherent across the entire
+    // draw: the GPU takes one side, not both.
+    float2 grad = gradSdRoundedRect(centeredCoord, halfSize, gradRadius);
+    if (depthEffect != 0.0) {
+        grad = normalize(grad + depthEffect * normalize(centeredCoord));
+    }
 
     return content.eval(coord + d * grad);
 }"""
@@ -102,9 +120,14 @@ uniform float2 size;
 uniform float2 offset;
 uniform float4 cornerRadii;
 uniform float refractionHeight;
+// 1 / refractionHeight, folded on the CPU. Every pixel inside the band divided by it to arrive at
+// a value that is the same for all of them; a reciprocal multiply is several times cheaper.
+uniform float refractionHeightInverse;
 uniform float refractionAmount;
 uniform float depthEffect;
-uniform float chromaticAberration;
+// Fringe strength per unit of x*y, also folded on the CPU. This was a division by the element's
+// half area on every pixel of the band, by a quantity that does not vary across the draw.
+uniform float dispersionScale;
 
 $ROUNDED_RECT_SDF
 
@@ -113,22 +136,36 @@ half4 main(float2 coord) {
     float2 centeredCoord = (coord + offset) - halfSize;
     float radius = radiusAt(centeredCoord, cornerRadii);
 
+    // Conservative interior test, before the field itself. Rounding only ever pulls the boundary
+    // inward, and never by more than the corner radius, so a pixel this far inside the axis-aligned
+    // bounds is certainly past the band. Three ALU ops here let every deep-interior pixel skip the
+    // SDF's length() — on a large pane that is nearly all of them, and for a plain rectangle this
+    // test is exact rather than merely conservative.
+    float2 inset = halfSize - abs(centeredCoord);
+    if (min(inset.x, inset.y) >= refractionHeight + radius) {
+        return content.eval(coord);
+    }
+
     float sd = sdRoundedRect(centeredCoord, halfSize, radius);
     if (-sd >= refractionHeight) {
         return content.eval(coord);
     }
     sd = min(sd, 0.0);
 
-    float d = circleMap(1.0 - -sd / refractionHeight) * refractionAmount;
+    // sd is negative here, so 1 - (-sd)/h is 1 + sd * (1/h) — the same value without the divide.
+    float d = circleMap(1.0 + sd * refractionHeightInverse) * refractionAmount;
     float gradRadius = min(radius * 1.5, min(halfSize.x, halfSize.y));
-    float2 grad = normalize(
-        gradSdRoundedRect(centeredCoord, halfSize, gradRadius) +
-        depthEffect * normalize(centeredCoord)
-    );
+    // gradSdRoundedRect already returns a unit vector — both of its branches do — so without a
+    // depth term the outer normalize() is a no-op and the inner one is computed only to be
+    // multiplied by zero. depthEffect is a uniform, so this branch is coherent across the entire
+    // draw: the GPU takes one side, not both.
+    float2 grad = gradSdRoundedRect(centeredCoord, halfSize, gradRadius);
+    if (depthEffect != 0.0) {
+        grad = normalize(grad + depthEffect * normalize(centeredCoord));
+    }
 
     float2 refractedCoord = coord + d * grad;
-    float dispersionIntensity =
-        chromaticAberration * ((centeredCoord.x * centeredCoord.y) / (halfSize.x * halfSize.y));
+    float dispersionIntensity = dispersionScale * (centeredCoord.x * centeredCoord.y);
     float2 dispersedCoord = d * grad * dispersionIntensity;
 
     half4 color = half4(0.0);
@@ -195,7 +232,9 @@ uniform float2 size;
 uniform float2 offset;
 uniform float4 cornerRadii;
 uniform float clearWidth;
-uniform float fadeWidth;
+// 1 / fadeWidth, clamped and folded on the CPU. The ramp divided by it on every pixel of every
+// branch, and there is one branch per stop.
+uniform float fadeWidthInverse;
 uniform float stopIndex;
 uniform float stopCount;
 
@@ -209,14 +248,21 @@ half4 main(float2 coord) {
     // How far inside the outline this pixel sits. Negative outside, which clamps away below.
     float depth = -sdRoundedRect(centeredCoord, halfSize, radius);
 
-    float t = clamp((depth - clearWidth) / max(fadeWidth, 0.0001), 0.0, 1.0);
+    float t = clamp((depth - clearWidth) * fadeWidthInverse, 0.0, 1.0);
 
     // Quintic smoothstep: zero first *and* second derivative at both ends, so the ramp neither
     // starts nor stops with a kink that the eye could read as a drawn line.
     float eased = t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
 
     float s = eased * stopCount;
-    float weight = max(0.0, 1.0 - abs(s - stopIndex));
+    float weight = 1.0 - abs(s - stopIndex);
+
+    // Outside its own hat a branch contributes nothing, and the multiply below would do no more
+    // than scale a fetched sample to zero. Returning here skips the fetch instead — and since a
+    // pixel is inside at most two hats, that is a third of the samples at the default two steps.
+    if (weight <= 0.0) {
+        return half4(0.0);
+    }
 
     return content.eval(coord) * half(weight);
 }"""
@@ -227,7 +273,9 @@ internal const val HIGHLIGHT_DEFAULT_SHADER: String = """
 uniform float2 size;
 uniform float4 cornerRadii;
 layout(color) uniform half4 color;
-uniform float angle;
+// Precomputed on the CPU. As an angle this cost a cos() and a sin() for every pixel of the
+// element, on every frame, to arrive at a value that is the same for all of them.
+uniform float2 lightNormal;
 uniform float falloff;
 
 $ROUNDED_RECT_SDF
@@ -239,8 +287,11 @@ half4 main(float2 coord) {
 
     float gradRadius = min(radius * 1.5, min(halfSize.x, halfSize.y));
     float2 grad = gradSdRoundedRect(centeredCoord, halfSize, gradRadius);
-    float2 normal = float2(cos(angle), sin(angle));
-    float intensity = pow(abs(dot(grad, normal)), falloff);
+    // pow() is among the most expensive things a fragment can do, and the default falloff of 1
+    // makes it the identity. The exponent is a uniform, so this branch is coherent across the
+    // whole draw — the GPU takes one side of it, not both.
+    float aligned = abs(dot(grad, lightNormal));
+    float intensity = falloff == 1.0 ? aligned : pow(aligned, falloff);
     return color * intensity;
 }"""
 
@@ -249,7 +300,9 @@ half4 main(float2 coord) {
 internal const val HIGHLIGHT_AMBIENT_SHADER: String = """
 uniform float2 size;
 uniform float4 cornerRadii;
-uniform float angle;
+// Precomputed on the CPU. As an angle this cost a cos() and a sin() for every pixel of the
+// element, on every frame, to arrive at a value that is the same for all of them.
+uniform float2 lightNormal;
 uniform float falloff;
 
 $ROUNDED_RECT_SDF
@@ -261,11 +314,64 @@ half4 main(float2 coord) {
 
     float gradRadius = min(radius * 1.5, min(halfSize.x, halfSize.y));
     float2 grad = gradSdRoundedRect(centeredCoord, halfSize, gradRadius);
-    float2 normal = float2(cos(angle), sin(angle));
-    float d = dot(grad, normal);
-    float intensity = pow(abs(d), falloff);
+    float d = dot(grad, lightNormal);
+    // As in the directional rim: a falloff of 1 makes pow() the identity, and the exponent is a
+    // uniform, so the branch costs nothing.
+    float aligned = abs(d);
+    float intensity = falloff == 1.0 ? aligned : pow(aligned, falloff);
     float t = step(0.0, d);
     return half4(t, t, t, 1.0) * intensity;
+}"""
+
+/**
+ * Directional rim whose four quadrants alternate between a tone and its opposite.
+ *
+ * The two diagonals agree — top-left with bottom-right, top-right with bottom-left — so the border
+ * reads as a bevel catching light from one direction and shadow from the other, rather than as four
+ * unrelated arcs.
+ */
+@Language("AGSL")
+internal const val HIGHLIGHT_TWSE_SHADER: String = """
+uniform float2 size;
+uniform float4 cornerRadii;
+layout(color) uniform half4 color;
+layout(color) uniform half4 inverseColor;
+// Precomputed on the CPU, as in the directional rim.
+uniform float2 lightNormal;
+uniform float falloff;
+// Half-width of the crossfade between the two tones, per axis. Per axis because the sweep it
+// controls runs along an edge, and the two edges of a card are rarely the same length.
+uniform float2 seamBlend;
+
+$ROUNDED_RECT_SDF
+
+half4 main(float2 coord) {
+    float2 halfSize = size * 0.5;
+    float2 centeredCoord = coord - halfSize;
+    float radius = radiusAt(centeredCoord, cornerRadii);
+
+    float gradRadius = min(radius * 1.5, min(halfSize.x, halfSize.y));
+    float2 grad = gradSdRoundedRect(centeredCoord, halfSize, gradRadius);
+    float aligned = abs(dot(grad, lightNormal));
+    float intensity = falloff == 1.0 ? aligned : pow(aligned, falloff);
+
+    // Which of the two tones this quadrant carries: 1 on the leading diagonal, 0 on the other.
+    // smoothstep rather than step, because the switch falls at the midpoint of an edge — exactly
+    // where the rim is a single row of pixels, and a hard change would alias into a visible notch.
+    //
+    // The width of that crossfade is the whole look. Kept short it reads as four flat quadrants
+    // with a hairline seam; spread across most of the half-edge — which is what an unspecified
+    // seamBlend resolves to — it becomes one continuous sweep from the lit corner to the dark one,
+    // and only the corners themselves settle on a pure tone.
+    float sx = smoothstep(-seamBlend.x, seamBlend.x, centeredCoord.x);
+    float sy = smoothstep(-seamBlend.y, seamBlend.y, centeredCoord.y);
+    float onDiagonal = sx * sy + (1.0 - sx) * (1.0 - sy);
+
+    // Premultiplied on the way out, so each tone's own alpha is the strength of that half of the
+    // rim instead of being dropped between here and the layer.
+    half4 base = half4(color.rgb * color.a, color.a);
+    half4 opposite = half4(inverseColor.rgb * inverseColor.a, inverseColor.a);
+    return mix(opposite, base, half(onDiagonal)) * half(intensity);
 }"""
 
 /**
@@ -299,7 +405,8 @@ half4 main(float2 coord) {
     float len = length(toPointer);
     float2 normal = len > 0.0001 ? toPointer / len : float2(0.0, -1.0);
 
-    float facing = pow(max(dot(grad, normal), 0.0), falloff);
+    float aligned = max(dot(grad, normal), 0.0);
+    float facing = falloff == 1.0 ? aligned : pow(aligned, falloff);
 
     float reach = max(halfSize.x, halfSize.y) * 2.0;
     float proximity = 1.0 - smoothstep(0.0, reach, distance(coord, pointer + halfSize));

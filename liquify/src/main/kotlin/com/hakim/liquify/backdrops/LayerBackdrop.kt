@@ -56,8 +56,12 @@ private val DefaultOnDraw: ContentDrawScope.() -> Unit = { drawContent() }
 @Composable
 public fun rememberLayerBackdrop(
     graphicsLayer: GraphicsLayer = rememberGraphicsLayer(),
+    drawContentFromLayer: Boolean = false,
     onDraw: ContentDrawScope.() -> Unit = DefaultOnDraw
-): LayerBackdrop = remember(graphicsLayer, onDraw) { LayerBackdrop(graphicsLayer, onDraw) }
+): LayerBackdrop =
+    remember(graphicsLayer, drawContentFromLayer, onDraw) {
+        LayerBackdrop(graphicsLayer, drawContentFromLayer, onDraw)
+    }
 
 /**
  * A [Backdrop] backed by a captured [GraphicsLayer].
@@ -69,6 +73,7 @@ public fun rememberLayerBackdrop(
 @Stable
 public class LayerBackdrop internal constructor(
     public val graphicsLayer: GraphicsLayer,
+    internal val drawContentFromLayer: Boolean,
     internal val onDraw: ContentDrawScope.() -> Unit
 ) : Backdrop {
 
@@ -141,8 +146,26 @@ private class LayerBackdropNode(
 ) : DrawModifierNode, GlobalPositionAwareModifierNode, Modifier.Node() {
 
     override fun ContentDrawScope.draw() {
-        drawContent()
-        recordLayer(backdrop.graphicsLayer, requireDensity()) { backdrop.onDraw(this@draw) }
+        val layer = backdrop.graphicsLayer
+        if (backdrop.drawContentFromLayer) {
+            // One rasterisation instead of two. The default path draws the marked content once for
+            // the screen and then a second time into the layer, so the entire subtree is rendered
+            // twice every frame — a cost that is paid whether or not any glass on top of it
+            // actually applies an effect, and that grows with how complex the content is rather
+            // than with how much glass there is. Recording first and compositing the finished
+            // layer replaces that second pass with a textured quad.
+            //
+            // The trade is clipping: the layer is recorded at this node's size, so anything a
+            // child draws beyond those bounds is cropped, where the default path lets it spill.
+            // That is why this is opt-in and not the default — it is right for a full-screen
+            // content layer and wrong for a small one wrapped around controls that overshoot
+            // their box while pressed.
+            recordLayer(layer, requireDensity()) { backdrop.onDraw(this@draw) }
+            drawLayer(layer)
+        } else {
+            drawContent()
+            recordLayer(layer, requireDensity()) { backdrop.onDraw(this@draw) }
+        }
     }
 
     override fun onGloballyPositioned(coordinates: LayoutCoordinates) {

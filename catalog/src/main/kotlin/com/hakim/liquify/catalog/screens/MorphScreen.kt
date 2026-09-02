@@ -42,6 +42,7 @@ import com.hakim.liquify.catalog.ui.catalogGlassEffects
 import com.hakim.liquify.catalog.ui.drawGlyph
 import com.hakim.liquify.group.LiquidGlassGroup
 import com.hakim.liquify.liquify
+import com.hakim.liquify.material.LocalGlassMaterial
 import com.hakim.liquify.transition.motionBlur
 import kotlin.math.roundToInt
 
@@ -113,7 +114,8 @@ fun MorphScreen(backdrop: Backdrop) {
                 .height(150.dp),
             effects = morphEffects,
             merge = 0.5f,
-            contentAlignment = Alignment.Center
+            contentAlignment = Alignment.Center,
+            material = LocalGlassMaterial.current
         ) {
             SegmentWidths.forEachIndexed { index, expandedWidth ->
                 val width = lerp(collapsedWidth, expandedWidth, progress)

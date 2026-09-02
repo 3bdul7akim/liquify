@@ -48,6 +48,15 @@ public data class Highlight(
         public val Plain: Highlight = Highlight(style = HighlightStyle.Plain)
 
         /**
+         * Directional rim whose quadrants alternate between a tone and its opposite, and whose
+         * tone follows the theme — white over a dark UI, black over a light one.
+         *
+         * Wider than the others by default: two tones need room to be told apart.
+         */
+        @Stable
+        public val TwSe: Highlight = Highlight(width = 1f.dp, style = HighlightStyle.TwSe)
+
+        /**
          * Rim that follows a pointer. Feed it a live position, e.g. from
          * [InteractiveHighlight][com.hakim.liquify.interaction.InteractiveHighlight]:
          *

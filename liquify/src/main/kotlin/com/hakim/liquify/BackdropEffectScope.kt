@@ -17,6 +17,7 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
+import com.hakim.liquify.effects.MAX_GRADIENT_BLUR_STEPS
 
 /**
  * Receiver of the `effects = { … }` block of
@@ -78,6 +79,31 @@ internal abstract class BaseBackdropEffectScope : BackdropEffectScope {
      */
     var mergeTintColor: Color = Color.Unspecified
 
+    /**
+     * Scratch for the four corner radii, shared by every effect in one block.
+     *
+     * The effects run again whenever anything they read changes, which for a pressed control is
+     * every frame — so resolving the radii into a fresh array there allocates one per frame per
+     * element. The effects upload the values immediately and never hold on to the array, so one
+     * per scope is enough.
+     */
+    val cornerRadiiScratch: FloatArray = FloatArray(4)
+
+    /**
+     * Fingerprint of the uniforms last uploaded to the refraction program, and to each stop of the
+     * gradient blur.
+     *
+     * Writing a uniform is not free: it crosses into the platform shader and discards the native
+     * instance it has already built, so the next draw recompiles it. Re-running an effects block
+     * because one animated radius moved would otherwise re-upload the size, the offset and the
+     * four corner radii along with it, none of which changed. The shaders live in this scope's own
+     * cache, so what was last written to them is exactly what these record.
+     */
+    var lensUniforms: Long = Long.MIN_VALUE
+
+    val gradientBlurUniforms: LongArray =
+        LongArray(MAX_GRADIENT_BLUR_STEPS + 1) { Long.MIN_VALUE }
+
     private val runtimeShaderCache = RuntimeShaderCacheImpl()
 
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)
@@ -124,6 +150,10 @@ internal abstract class BaseBackdropEffectScope : BackdropEffectScope {
         renderEffect = null
         mergeRadius = 0f
         mergeTintColor = Color.Unspecified
+        // The shaders the fingerprints describe go with the cache, so what was uploaded to them is
+        // no longer known.
+        lensUniforms = Long.MIN_VALUE
+        gradientBlurUniforms.fill(Long.MIN_VALUE)
         runtimeShaderCache.clear()
     }
 }

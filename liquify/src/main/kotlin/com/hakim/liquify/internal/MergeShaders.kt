@@ -265,16 +265,21 @@ private fun buildGlassShader(count: Int, tinted: Boolean): String {
 uniform shader content;
 
 uniform float2 offset;
-uniform float aaWidth;
+// 1 / aaWidth. The coverage ramp is evaluated on every pixel of the layer, including the ones the
+// mask rejects, so the divide it used to do was the most-executed instruction in the program.
+uniform float aaInverse;
 
 uniform float refractionHeight;
+uniform float refractionHeightInverse;
 uniform float refractionAmount;
 uniform float depthEffect;
 
 layout(color) uniform half4 highlightColor;
 uniform float highlightIntensity;
 uniform float highlightWidth;
-uniform float highlightAngle;
+// The light direction itself, not its angle. As an angle this cost a cos() and a sin() on every
+// pixel of the merged surface, on every frame, for a vector that is the same across the draw.
+uniform float2 highlightNormal;
 uniform float highlightFalloff;
 
 ${mergePrelude(count, tinted)}
@@ -284,7 +289,7 @@ half4 main(float2 coord) {
 ${fieldSetup(count, tinted)}
     float sd = field.x;
 
-    float mask = clamp(0.5 - sd / aaWidth, 0.0, 1.0);
+    float mask = clamp(0.5 - sd * aaInverse, 0.0, 1.0);
     if (mask <= 0.0) {
         return half4(0.0);
     }
@@ -321,7 +326,9 @@ ${fieldSetup(count, tinted)}
                 bendDirection = normalize(grad + depthEffect * (radial / radialLength));
             }
         }
-        float d = circleMap(1.0 - -min(sd, 0.0) / refractionHeight) * refractionAmount * confidence;
+        // min(sd, 0) is negative, so 1 - (-x)/h is 1 + x * (1/h) — the same value without a divide.
+        float d =
+            circleMap(1.0 + min(sd, 0.0) * refractionHeightInverse) * refractionAmount * confidence;
         sampleCoord = coord + d * bendDirection;
     }
 
@@ -329,8 +336,10 @@ ${fieldSetup(count, tinted)}
 $applyTint
     if (highlightWidth > 0.0 && highlightIntensity > 0.0) {
         float rim = 1.0 - smoothstep(0.0, highlightWidth, abs(sd));
-        float2 lightDirection = float2(cos(highlightAngle), sin(highlightAngle));
-        float facing = pow(abs(dot(grad, lightDirection)), highlightFalloff);
+        // A falloff of 1 makes pow() the identity, and 0 makes it a uniform hairline — both are
+        // uniforms, so the branch is coherent and the common cases skip the call entirely.
+        float aligned = abs(dot(grad, highlightNormal));
+        float facing = highlightFalloff == 1.0 ? aligned : pow(aligned, highlightFalloff);
         // Same confidence gate: the rim follows the surface normal, so where the normal is noise
         // the rim would otherwise streak a bright seam across the neck.
         half intensity = half(rim * facing * mask * highlightIntensity * confidence);
@@ -352,7 +361,9 @@ internal fun mergeSilhouetteShader(count: Int): String =
 @Language("AGSL")
 private fun buildSilhouetteShader(count: Int): String = """
 uniform float2 offset;
-uniform float aaWidth;
+// 1 / aaWidth, as in the glass pass — and it matters more here, because the shadow layer is two
+// blur radii larger than the surface on every side and this runs on all of it.
+uniform float aaInverse;
 layout(color) uniform half4 color;
 uniform float colorAlpha;
 
@@ -360,7 +371,7 @@ ${mergePrelude(count, tinted = false)}
 
 half4 main(float2 coord) {
     float sd = sceneDistance(coord + offset);
-    float mask = clamp(0.5 - sd / aaWidth, 0.0, 1.0);
+    float mask = clamp(0.5 - sd * aaInverse, 0.0, 1.0);
     // Premultiplied: colour is supplied opaque and the coverage carries the alpha.
     return half4(color.rgb, 1.0) * half(mask * colorAlpha);
 }"""

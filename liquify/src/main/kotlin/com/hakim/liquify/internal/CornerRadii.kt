@@ -18,38 +18,48 @@ import androidx.compose.ui.util.fastCoerceAtMost
 import com.kyant.shapes.RoundedRectangularShape
 
 /**
- * Resolves the four corner radii of [Shape] in pixels, ordered top-left, top-right, bottom-right,
- * bottom-left — the order every AGSL program in this library expects.
+ * Writes the four corner radii of [Shape] in pixels into [out], ordered top-left, top-right,
+ * bottom-right, bottom-left — the order every AGSL program in this library expects.
  *
- * Returns `null` for shapes whose geometry cannot be expressed as a rounded rectangle. The signed
- * distance fields used for refraction, the rim highlight and the merge pass are all analytic
- * rounded-rectangle fields, so those effects are skipped rather than rendered wrongly.
+ * Returns `false`, leaving [out] untouched, for shapes whose geometry cannot be expressed as a
+ * rounded rectangle. The signed distance fields used for refraction, the rim highlight and the
+ * merge pass are all analytic rounded-rectangle fields, so those effects are skipped rather than
+ * rendered wrongly.
+ *
+ * [out] is a caller-owned scratch array rather than a fresh one, because the callers are on the
+ * per-frame path: an effect block that reads an animated value re-runs on every frame it changes,
+ * and a dragged group member resolves its radii on every layout pass. Four floats allocated there
+ * is four floats allocated sixty times a second, per element.
  */
 internal fun Shape.resolveCornerRadii(
     size: Size,
     layoutDirection: LayoutDirection,
-    density: Density
-): FloatArray? {
+    density: Density,
+    out: FloatArray
+): Boolean {
     val maxRadius = size.minDimension / 2f
-    return when {
-        this === RectangleShape -> FloatArray(4)
+    when {
+        this === RectangleShape -> {
+            out[0] = 0f
+            out[1] = 0f
+            out[2] = 0f
+            out[3] = 0f
+        }
 
         this is RoundedRectangularShape -> {
             val corners = corners(size, layoutDirection, density)
-            floatArrayOf(
-                corners.topLeft.fastCoerceAtMost(maxRadius),
-                corners.topRight.fastCoerceAtMost(maxRadius),
-                corners.bottomRight.fastCoerceAtMost(maxRadius),
-                corners.bottomLeft.fastCoerceAtMost(maxRadius)
-            )
+            out[0] = corners.topLeft.fastCoerceAtMost(maxRadius)
+            out[1] = corners.topRight.fastCoerceAtMost(maxRadius)
+            out[2] = corners.bottomRight.fastCoerceAtMost(maxRadius)
+            out[3] = corners.bottomLeft.fastCoerceAtMost(maxRadius)
         }
 
-        this is AbsoluteRoundedCornerShape -> floatArrayOf(
-            topStart.toPx(size, density).fastCoerceAtMost(maxRadius),
-            topEnd.toPx(size, density).fastCoerceAtMost(maxRadius),
-            bottomEnd.toPx(size, density).fastCoerceAtMost(maxRadius),
-            bottomStart.toPx(size, density).fastCoerceAtMost(maxRadius)
-        )
+        this is AbsoluteRoundedCornerShape -> {
+            out[0] = topStart.toPx(size, density).fastCoerceAtMost(maxRadius)
+            out[1] = topEnd.toPx(size, density).fastCoerceAtMost(maxRadius)
+            out[2] = bottomEnd.toPx(size, density).fastCoerceAtMost(maxRadius)
+            out[3] = bottomStart.toPx(size, density).fastCoerceAtMost(maxRadius)
+        }
 
         this is CornerBasedShape -> {
             val isLtr = layoutDirection == LayoutDirection.Ltr
@@ -57,14 +67,26 @@ internal fun Shape.resolveCornerRadii(
             val topRight = if (isLtr) topEnd else topStart
             val bottomRight = if (isLtr) bottomEnd else bottomStart
             val bottomLeft = if (isLtr) bottomStart else bottomEnd
-            floatArrayOf(
-                topLeft.toPx(size, density).fastCoerceAtMost(maxRadius),
-                topRight.toPx(size, density).fastCoerceAtMost(maxRadius),
-                bottomRight.toPx(size, density).fastCoerceAtMost(maxRadius),
-                bottomLeft.toPx(size, density).fastCoerceAtMost(maxRadius)
-            )
+            out[0] = topLeft.toPx(size, density).fastCoerceAtMost(maxRadius)
+            out[1] = topRight.toPx(size, density).fastCoerceAtMost(maxRadius)
+            out[2] = bottomRight.toPx(size, density).fastCoerceAtMost(maxRadius)
+            out[3] = bottomLeft.toPx(size, density).fastCoerceAtMost(maxRadius)
         }
 
-        else -> null
+        else -> return false
     }
+    return true
+}
+
+/**
+ * [resolveCornerRadii] into a fresh array, for the call sites that are not on the per-frame path —
+ * the rim styles, which only resolve their geometry when the recorded stroke actually changes.
+ */
+internal fun Shape.resolveCornerRadii(
+    size: Size,
+    layoutDirection: LayoutDirection,
+    density: Density
+): FloatArray? {
+    val radii = FloatArray(4)
+    return if (resolveCornerRadii(size, layoutDirection, density, radii)) radii else null
 }

@@ -8,8 +8,10 @@
 package com.hakim.liquify.effects
 
 import androidx.annotation.FloatRange
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.util.fastCoerceAtLeast
 import com.hakim.liquify.BackdropEffectScope
+import com.hakim.liquify.BaseBackdropEffectScope
 import com.hakim.liquify.GroupEffectScope
 import com.hakim.liquify.internal.REFRACTION_DISPERSION_SHADER
 import com.hakim.liquify.internal.REFRACTION_SHADER
@@ -54,13 +56,16 @@ public fun BackdropEffectScope.lens(
         return
     }
 
+    val scope = this as BaseBackdropEffectScope
+
     // Refraction reads inwards from the border, so it re-uses the halo blur already reserved
     // rather than asking for more.
     if (padding > 0f) {
         padding = (padding - refractionHeight).fastCoerceAtLeast(0f)
     }
 
-    val cornerRadii = shape.resolveCornerRadii(size, layoutDirection, this) ?: return
+    val cornerRadii = scope.cornerRadiiScratch
+    if (!shape.resolveCornerRadii(size, layoutDirection, this, cornerRadii)) return
 
     val shader =
         if (chromaticAberration) {
@@ -69,19 +74,66 @@ public fun BackdropEffectScope.lens(
             obtainRuntimeShader("liquify.refraction", REFRACTION_SHADER)
         }
 
-    shader.apply {
-        setFloatUniform("size", size.width, size.height)
-        setFloatUniform("offset", -padding, -padding)
-        setFloatUniform("cornerRadii", cornerRadii)
-        setFloatUniform("refractionHeight", refractionHeight)
-        // Negative displacement pulls the backdrop inwards, which is the direction that reads as
-        // looking through the glass rather than as a bulge on top of it.
-        setFloatUniform("refractionAmount", -refractionAmount)
-        setFloatUniform("depthEffect", if (depthEffect) 1f else 0f)
-        if (chromaticAberration) {
-            setFloatUniform("chromaticAberration", 1f)
+    // Both of these were per-pixel divisions inside the band, by quantities that are the same for
+    // every pixel of the draw. The shader takes the reciprocals instead.
+    val refractionHeightInverse = 1f / refractionHeight
+    val halfArea = size.width * size.height * 0.25f
+    val dispersionScale = if (halfArea > 0f) 1f / halfArea else 0f
+
+    // Uploading a uniform discards the platform shader's built native instance, so an effects
+    // block re-running because one animated value moved would pay to rebuild the program even
+    // where nothing it reads has changed. The variant is part of the fingerprint because the two
+    // programs are separate shader instances, each holding whatever was last written to it.
+    val fingerprint = lensUniformFingerprint(
+        chromaticAberration = chromaticAberration,
+        size = size,
+        padding = padding,
+        cornerRadii = cornerRadii,
+        refractionHeight = refractionHeight,
+        refractionAmount = refractionAmount,
+        depthEffect = depthEffect,
+        dispersionScale = dispersionScale
+    )
+    if (fingerprint != scope.lensUniforms) {
+        scope.lensUniforms = fingerprint
+        shader.apply {
+            setFloatUniform("size", size.width, size.height)
+            setFloatUniform("offset", -padding, -padding)
+            setFloatUniform("cornerRadii", cornerRadii)
+            setFloatUniform("refractionHeight", refractionHeight)
+            setFloatUniform("refractionHeightInverse", refractionHeightInverse)
+            // Negative displacement pulls the backdrop inwards, which is the direction that reads
+            // as looking through the glass rather than as a bulge on top of it.
+            setFloatUniform("refractionAmount", -refractionAmount)
+            setFloatUniform("depthEffect", if (depthEffect) 1f else 0f)
+            if (chromaticAberration) {
+                setFloatUniform("dispersionScale", dispersionScale)
+            }
         }
     }
 
     renderEffect = renderEffect.chain(RuntimeShaderEffect(shader, "content"))
+}
+
+/** Everything written to the refraction program, folded into one value. */
+private fun lensUniformFingerprint(
+    chromaticAberration: Boolean,
+    size: Size,
+    padding: Float,
+    cornerRadii: FloatArray,
+    refractionHeight: Float,
+    refractionAmount: Float,
+    depthEffect: Boolean,
+    dispersionScale: Float
+): Long {
+    var hash = if (chromaticAberration) 31L else 17L
+    hash = hash * 31L + size.width.toRawBits()
+    hash = hash * 31L + size.height.toRawBits()
+    hash = hash * 31L + padding.toRawBits()
+    for (corner in 0..3) hash = hash * 31L + cornerRadii[corner].toRawBits()
+    hash = hash * 31L + refractionHeight.toRawBits()
+    hash = hash * 31L + refractionAmount.toRawBits()
+    hash = hash * 31L + if (depthEffect) 1L else 0L
+    hash = hash * 31L + dispersionScale.toRawBits()
+    return hash
 }

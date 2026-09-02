@@ -42,9 +42,11 @@ import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.tanh
 
+// The element size is deliberately absent: the hotspot is positioned and sized in the same
+// coordinate space the fragment already arrives in, so the program never read it — and uploading
+// a uniform discards the native shader the last frame built, on every frame of every press.
 @Language("AGSL")
 private const val ILLUMINATION_SHADER = """
-uniform float2 size;
 layout(color) uniform half4 color;
 uniform float radius;
 uniform float2 position;
@@ -134,6 +136,15 @@ public class InteractiveHighlight(
 
     private val shader: RuntimeShader? =
         if (isRuntimeShaderSupported()) RuntimeShader(ILLUMINATION_SHADER) else null
+
+    /**
+     * The brush the hotspot is painted with, built on first use and then kept.
+     *
+     * It wraps the shader above rather than a snapshot of it — the paint resolves the shader again
+     * on every draw, so the uniforms written each frame still land. Building a fresh brush there
+     * allocated a wrapper per frame for the whole length of a press, for a value that never varies.
+     */
+    private var glowBrush: ShaderBrush? = null
 
     /** `0f` at rest, `1f` while held. */
     public val pressProgress: Float get() = pressProgressAnimation.value
@@ -253,7 +264,6 @@ public class InteractiveHighlight(
 
                 val litPosition = position(size, positionAnimation.value)
                 shader.apply {
-                    setFloatUniform("size", size.width, size.height)
                     setColorUniform("color", glowColor.copy(alpha = glowIntensity * progress))
                     setFloatUniform("radius", size.minDimension * 1.5f)
                     setFloatUniform(
@@ -262,7 +272,9 @@ public class InteractiveHighlight(
                         litPosition.y.fastCoerceIn(0f, size.height)
                     )
                 }
-                drawRect(ShaderBrush(shader.asComposeShader()), blendMode = BlendMode.Plus)
+                val brush = glowBrush
+                    ?: ShaderBrush(shader.asComposeShader()).also { glowBrush = it }
+                drawRect(brush, blendMode = BlendMode.Plus)
             } else {
                 drawRect(glowColor.copy(alpha = 0.25f * progress), blendMode = BlendMode.Plus)
             }

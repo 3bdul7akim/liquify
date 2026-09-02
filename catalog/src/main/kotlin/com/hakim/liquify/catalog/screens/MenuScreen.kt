@@ -43,7 +43,9 @@ import com.hakim.liquify.catalog.ui.catalogGlassEffects
 import com.hakim.liquify.catalog.ui.drawGlyph
 import com.hakim.liquify.effects.blur
 import com.hakim.liquify.group.LiquidGlassGroup
+import com.hakim.liquify.highlight.Highlight
 import com.hakim.liquify.liquify
+import com.hakim.liquify.material.LocalGlassMaterial
 import com.hakim.liquify.transition.materialize
 import com.hakim.liquify.transition.motionBlur
 import com.kyant.shapes.RoundedRectangle
@@ -133,7 +135,8 @@ fun MenuScreen(backdrop: Backdrop) {
                 .padding(bottom = 48.dp),
             effects = menuEffects,
             merge = 0.6f,
-            contentAlignment = Alignment.BottomCenter
+            contentAlignment = Alignment.BottomCenter,
+            material = LocalGlassMaterial.current
         ) {
             // Panel — grows upward out of the button.
             Box(
@@ -145,7 +148,9 @@ fun MenuScreen(backdrop: Backdrop) {
                         { RoundedRectangle(lerp(30.dp, 26.dp, progress)) },
                         dragging = true,
                         stretching = true,
-                        interactiveHighlight = false
+                        interactiveHighlight = false,
+                        material = LocalGlassMaterial.current,
+                        highlight = Highlight.TwSe
                     ),
                 contentAlignment = Alignment.Center
             ) {
@@ -192,7 +197,7 @@ fun MenuScreen(backdrop: Backdrop) {
             Box(
                 modifier = Modifier
                     .size(buttonSize)
-                    .liquify(CapsuleShape, dragging = true, interactiveHighlight = true)
+                    .liquify(CapsuleShape, dragging = true, interactiveHighlight = true, highlight = Highlight.TwSe)
                     .pointerInput(Unit) { detectTapGestures { open = !open } },
                 contentAlignment = Alignment.Center
             ) {

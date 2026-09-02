@@ -110,9 +110,9 @@ Modifier.liquify(
     tint = Color.Unspecified,          // overrides GlassMaterial.tint; in a group it is what the
                                        // merge pass blends with the neighbours' colours
     gradientBlur = false,              // frost the middle, keep the rim clear
-    highlight = Highlight.Default,     // specular rim, or null for none
-    shadow = Shadow.Default,           // drop shadow, or null
-    innerShadow = null,                // recessed look
+    highlight = material.highlight,    // specular rim, or null for none
+    shadow = material.shadow,          // drop shadow, or null
+    innerShadow = material.innerShadow, // recessed look
     interaction = null,                // share one gesture across several elements
     dragging = interaction != null,    // lean towards the finger — so: off unless you pass one
     stretching = false,                // …and swell/stretch while doing it (always opt-in)
@@ -181,9 +181,20 @@ GlassMaterial(
     opacity = 1f,                // below 1f lets the raw background through
     depthEffect = true,          // dome the pane into a lens instead of a flat sheet
     chromaticAberration = false, // coloured fringe at the rim (7 samples/px instead of 1)
-    gradientBlur = false         // frost the middle only, leave the rim clear
+    gradientBlur = false,        // frost the middle only, leave the rim clear
+
+    highlight = Highlight.Default, // the specular rim, or null for none
+    shadow = Shadow.Default,       // the drop shadow, or null for glass that sits flat
+    innerShadow = null             // a recessed look, off by default
 )
 ```
+
+The last three are the *decoration* around the pane rather than the pane itself, and they are here for
+the same reason as everything above: so an app states them once. A material with `shadow = null`
+gives you unshadowed glass everywhere, and `highlight = Highlight.Ambient` bevels every pane in the
+app. Passing `shadow` / `highlight` / `innerShadow` to a single `liquify` still wins locally, and
+they are the one part of a material `effects = { material(…) }` cannot apply — an effects block
+builds the chain the backdrop runs through, while these are drawn by nodes around it.
 
 Three presets ship with it:
 
@@ -210,15 +221,24 @@ ProvideGlassMaterial(material) {
 ```
 
 Every `liquify` call resolves `material` from `LocalGlassMaterial` by default, and so does
-`LiquidGlassGroup`. Passing `material` explicitly to a single element still wins.
+`LiquidGlassGroup`. That holds for all three overloads: the `effects` form replaces the *material*,
+not the app's say over the rim, the shadow and the inner shadow around it, so those still come from
+`LocalGlassMaterial` unless you pass them. Passing `material` explicitly to a single element still
+wins — see the note under [Merging](#merging--the-gooey-effect) for what that means inside a group.
 
-For a group, which takes an effect *block* rather than a material, use the matching helper — it
-returns a stable instance, which matters because a freshly allocated lambda would make the group
-rebuild its inherited defaults every recomposition:
+The one place nothing is inherited is `Modifier.liquidGlassGroup`, the plain-modifier half of
+`LiquidGlassGroup`: a modifier is not a composable and cannot read a `CompositionLocal`, so pass it
+what you want it to use.
+
+A group follows along too, and passes the material on to its own children:
 
 ```kotlin
-LiquidGlassGroup(backdrop, effects = rememberGlassEffects(GlassMaterial.Clear)) { … }
+LiquidGlassGroup(backdrop = backdrop, material = GlassMaterial.Clear) { … }
 ```
+
+Only reach for `rememberGlassEffects(material)` when you need to hand a group an effect *block* the
+material cannot express. It returns a stable instance, which matters because a freshly allocated
+lambda would make the group rebuild its effect chain every recomposition.
 
 ---
 
@@ -346,13 +366,24 @@ group, because every member of one surface is by definition made of the same gla
 LiquidGlassGroup(
     backdrop = backdrop,              // optional — null inherits it from ProvideBackdrop
     modifier = Modifier.fillMaxWidth().height(420.dp),
-    effects = rememberGlassEffects(GlassMaterial.Thick),  // shared material
+    material = GlassMaterial.Thick,   // the glass, published to every child
     merge = 0.75f,                    // shared reach; 0f lays out together without fusing
-    highlight = { Highlight.Default },// rim of the *combined* silhouette
-    shadow = { Shadow.Default },      // shadow of the combined silhouette
+    effects = …,                      // derived from `material`; override for a custom stack
+    highlight = { Highlight.Default },// rim of the *combined* silhouette; from `material` by default
+    shadow = { Shadow.Default },      // shadow of the combined silhouette; likewise
     contentAlignment = Alignment.BottomCenter
 ) { … }
 ```
+
+The group provides its `material` as `LocalGlassMaterial` for its whole subtree, so members inherit
+it the same way they inherit the backdrop — including children that are *not* part of the merged
+surface.
+
+A child that names a **different** material overrides it for itself, and in doing so leaves the
+merge: one merged body is one effect chain and cannot be two glasses at once, so an element made of
+something else has to render its own pane, with its own rim and shadow. Naming the *same* material
+changes nothing — the comparison is by value, so `material = LocalGlassMaterial.current` is always
+safe to write out and still merges.
 
 Members stop rendering their own glass. The group evaluates every member's signed distance field,
 blends them with a **smooth minimum**, and renders one surface. Two elements approaching each other
@@ -501,9 +532,27 @@ a slop threshold and without consuming events.
 
 ```kotlin
 Highlight(width = 0.5.dp, blurRadius = width / 2, alpha = 1f, style = HighlightStyle.Default)
-Shadow(radius = 24.dp, offset = DpOffset(0.dp, radius / 6), color = Color.Black.copy(0.1f))
-InnerShadow(radius = 24.dp, offset = DpOffset(0.dp, radius), color = Color.Black.copy(0.15f))
+Shadow(radius = 24.dp, offset = DpOffset(0.dp, radius / 6), color = Color.Unspecified)
+InnerShadow(radius = 24.dp, offset = DpOffset(0.dp, radius), color = Color.Unspecified)
 ```
+
+### Shadows follow the theme
+
+Both shadow colours default to `Color.Unspecified`, which is not "no colour" but "resolve me when
+you draw me". Over a light UI that is the black ink it always was; over a dark one it inverts into a
+pale halo, because a black shadow on a near-black background is not a subtle shadow, it is no shadow
+at all — the element loses the gap that made it read as floating.
+
+Nothing to wire up: the resolution follows `isSystemInDarkTheme()`. An app with its own switch, or a
+dark sheet inside a light app, overrides it for a subtree:
+
+```kotlin
+ProvideGlassDarkTheme(appTheme.isDark) { App() }
+```
+
+Naming a colour explicitly — `Shadow(color = Color.Black.copy(0.2f))` — opts out and is used as
+given, in both themes. The exact inks are `Shadow.LightThemeColor` / `Shadow.DarkThemeColor` and the
+same pair on `InnerShadow`.
 
 | Rim style | Look |
 | --- | --- |
@@ -511,6 +560,28 @@ InnerShadow(radius = 24.dp, offset = DpOffset(0.dp, radius), color = Color.Black
 | `Default(angle, falloff)` | Directional, lit from a fixed angle. |
 | `Ambient(intensity, angle, falloff)` | White on the lit side, dark opposite — reads as a bevel. |
 | `Dynamic(color, pointer, focus, falloff)` | Follows the pointer. `interaction.dynamicHighlight()` builds one for you. |
+| `TwSe(color, inverseColor, angle, falloff, seamBlend)` | Directional like `Default`, but its quadrants alternate and its tone follows the theme. |
+
+`TwSe` is the one rim that knows what it is drawn on. Left to itself it is **white over a dark UI
+and black over a light one** — it reads as a drawn bevel rather than as a reflection, and a white
+bevel on a white background is not there. On top of that its four quadrants alternate between that
+tone and its opposite: white at the top-left, black at the top-right, white again at the
+bottom-right, black at the bottom-left, so one light appears to cross a raised edge.
+
+`seamBlend` is how far the change from one tone to the other is spread, out from the midpoint of an
+edge. `Dp.Unspecified` — the default — scales it with the element so the sweep covers most of every
+edge whatever the size, and only the corners settle on a pure tone; that is what makes the rim read
+as one gradient rather than as four flat quadrants meeting at a seam. A `Dp` is absolute on both
+axes, and `0.dp` gives a hard switch. Set `color` to opt out of the theme and `inverseColor` to
+choose the other tone rather than having it derived by inversion.
+
+```kotlin
+Modifier.liquify(RoundedRectangle(28.dp), highlight = Highlight.TwSe)
+```
+
+Inside a `LiquidGlassGroup` it falls back to a plain directional rim in the resolved tone: a merged
+silhouette has no quadrants of its own, and inventing some would draw a seam through the bridges
+merging exists to dissolve.
 
 Shadows are punched out under the element, so they never darken the backdrop seen *through* the
 glass.
@@ -593,9 +664,9 @@ unstretched copy of it.
 - `gradientBlur` composites one branch per step — see the table above before raising `steps`.
 - A merged group renders over the union of its members, so keep groups tight.
 - A group that is only being *redrawn* — the page scrolled behind it, nothing about it moved — keeps
-  the effect chain it already built and reuses its recorded shadow, so that case costs one merge
-  pass and nothing else. Moving a member, resizing the group or animating the effects block brings
-  the rebuild back, as it must.
+  the effect chain it already built, the uniforms it already uploaded and its recorded shadow, so
+  that case costs one merge pass and nothing else. Moving a member, resizing the group or animating
+  the effects block brings the rebuild back, as it must.
 - Prefer `LazyColumn` over a scrolling `Column` for lists of glass cards, so offscreen ones are
   neither composed nor drawn.
 - **Measure with a warm-up.** Shader compilation and thermals move these numbers enormously; I

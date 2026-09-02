@@ -9,12 +9,15 @@ package com.hakim.liquify.effects
 
 import androidx.annotation.FloatRange
 import androidx.annotation.IntRange
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.RenderEffect
 import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.util.fastCoerceAtLeast
 import com.hakim.liquify.BackdropEffectScope
+import com.hakim.liquify.BaseBackdropEffectScope
 import com.hakim.liquify.GroupEffectScope
 import com.hakim.liquify.internal.BlendEffect
 import com.hakim.liquify.internal.GRADIENT_BLUR_SHADER
@@ -74,7 +77,18 @@ private val DefaultFadeWidth: Dp = 15.dp
  * that costs nothing, and anything above it is an explicit decision made against a real budget.
  */
 private const val DefaultSteps = 2
-private const val MaxSteps = 6
+
+internal const val MAX_GRADIENT_BLUR_STEPS: Int = 6
+
+/**
+ * Cache keys of the per-stop weight programs, built once for the whole process.
+ *
+ * Composing `"liquify.gradientBlur.$stop"` at the call site allocated a string per stop every time
+ * the effects block ran — which for a blur driven by a press is every frame — to look up a shader
+ * that was compiled long ago.
+ */
+private val GradientBlurKeys: Array<String> =
+    Array(MAX_GRADIENT_BLUR_STEPS + 1) { "liquify.gradientBlur.$it" }
 
 /**
  * Blur that only exists in the middle of the element, ramping up from nothing at the border.
@@ -141,10 +155,16 @@ public fun BackdropEffectScope.gradientBlur(
     if (!isRuntimeShaderSupported()) return blur(radius, edgeTreatment)
     if (this is GroupEffectScope) return blur(radius, edgeTreatment)
 
-    val cornerRadii =
-        shape.resolveCornerRadii(size, layoutDirection, this) ?: return blur(radius, edgeTreatment)
+    val scope = this as BaseBackdropEffectScope
+    val cornerRadii = scope.cornerRadiiScratch
+    if (!shape.resolveCornerRadii(size, layoutDirection, this, cornerRadii)) {
+        return blur(radius, edgeTreatment)
+    }
 
-    val stopCount = steps.coerceIn(1, MaxSteps)
+    val stopCount = steps.coerceIn(1, MAX_GRADIENT_BLUR_STEPS)
+
+    // The ramp divided by this on every pixel of every branch; the shader multiplies instead.
+    val fadeWidthInverse = 1f / fadeWidth.fastCoerceAtLeast(0.0001f)
 
     // Snapshot: every branch has to hang off the state of the chain as it was, not off what this
     // function is building. Passing the identical instance to each of them also gives Skia one
@@ -165,14 +185,31 @@ public fun BackdropEffectScope.gradientBlur(
                 base
             }
 
-        val weights = obtainRuntimeShader("liquify.gradientBlur.$stop", GRADIENT_BLUR_SHADER).apply {
-            setFloatUniform("size", size.width, size.height)
-            setFloatUniform("offset", -padding, -padding)
-            setFloatUniform("cornerRadii", cornerRadii)
-            setFloatUniform("clearWidth", clearWidth)
-            setFloatUniform("fadeWidth", fadeWidth)
-            setFloatUniform("stopIndex", stop.toFloat())
-            setFloatUniform("stopCount", stopCount.toFloat())
+        val weights = obtainRuntimeShader(GradientBlurKeys[stop], GRADIENT_BLUR_SHADER)
+
+        // Only the geometry reaches this program, and the geometry is exactly what does not change
+        // when a blur radius animates — so the seven writes below, and the native rebuild each one
+        // forces, are skipped on every frame but the ones that resized or reshaped the element.
+        val fingerprint = gradientBlurUniformFingerprint(
+            size = size,
+            padding = padding,
+            cornerRadii = cornerRadii,
+            clearWidth = clearWidth,
+            fadeWidthInverse = fadeWidthInverse,
+            stop = stop,
+            stopCount = stopCount
+        )
+        if (fingerprint != scope.gradientBlurUniforms[stop]) {
+            scope.gradientBlurUniforms[stop] = fingerprint
+            weights.apply {
+                setFloatUniform("size", size.width, size.height)
+                setFloatUniform("offset", -padding, -padding)
+                setFloatUniform("cornerRadii", cornerRadii)
+                setFloatUniform("clearWidth", clearWidth)
+                setFloatUniform("fadeWidthInverse", fadeWidthInverse)
+                setFloatUniform("stopIndex", stop.toFloat())
+                setFloatUniform("stopCount", stopCount.toFloat())
+            }
         }
 
         val branch = blurredBase.chain(RuntimeShaderEffect(weights, "content"))
@@ -185,4 +222,24 @@ public fun BackdropEffectScope.gradientBlur(
     }
 
     renderEffect = combined
+}
+
+/** Everything written to one stop's weight program, folded into a single value. */
+private fun gradientBlurUniformFingerprint(
+    size: Size,
+    padding: Float,
+    cornerRadii: FloatArray,
+    clearWidth: Float,
+    fadeWidthInverse: Float,
+    stop: Int,
+    stopCount: Int
+): Long {
+    var hash = stop * 31L + stopCount
+    hash = hash * 31L + size.width.toRawBits()
+    hash = hash * 31L + size.height.toRawBits()
+    hash = hash * 31L + padding.toRawBits()
+    for (corner in 0..3) hash = hash * 31L + cornerRadii[corner].toRawBits()
+    hash = hash * 31L + clearWidth.toRawBits()
+    hash = hash * 31L + fadeWidthInverse.toRawBits()
+    return hash
 }

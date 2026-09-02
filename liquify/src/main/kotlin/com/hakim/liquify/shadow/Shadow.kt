@@ -13,6 +13,7 @@ import androidx.compose.runtime.Stable
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.isSpecified
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpOffset
@@ -31,12 +32,14 @@ import androidx.compose.ui.util.lerp
  *
  * @param radius blur radius of the shadow.
  * @param offset displacement; a small downward offset reads as light from above.
+ * @param color the ink. [Color.Unspecified] — the default — is resolved against the theme when the
+ *   shadow is drawn, so one [Shadow] reads correctly in both: see [defaultColor].
  */
 @Immutable
 public data class Shadow(
-    val radius: Dp = 24f.dp,
-    val offset: DpOffset = DpOffset(0f.dp, radius / 6f),
-    val color: Color = Color.Black.copy(alpha = 0.1f),
+    val radius: Dp = 18f.dp,
+    val offset: DpOffset = DpOffset(0f.dp, radius / 5f),
+    val color: Color = Color.Unspecified,
     @param:FloatRange(from = 0.0, to = 1.0) val alpha: Float = 1f,
     val blendMode: BlendMode = DrawScope.DefaultBlendMode
 ) {
@@ -45,6 +48,30 @@ public data class Shadow(
 
         @Stable
         public val Default: Shadow = Shadow()
+
+        /**
+         * The ink an unspecified [color] resolves to over a light UI: black, at the low opacity a
+         * material this transparent can carry without looking printed on.
+         */
+        @Stable
+        public val LightThemeColor: Color = Color.Black.copy(alpha = 0.12f)
+
+        /**
+         * And over a dark one.
+         *
+         * A black shadow on a near-black background is not a subtle shadow, it is no shadow at
+         * all — the element loses the gap that made it read as floating. Inverted into a pale halo
+         * it does the same job the other way round: the surface around the glass is lifted
+         * *towards* the light rather than away from it, and the element separates again. Kept
+         * fainter than a rim would be, so it reads as spill and not as a second border.
+         */
+        @Stable
+        public val DarkThemeColor: Color = Color.White.copy(alpha = 0.07f)
+
+        /** [LightThemeColor] or [DarkThemeColor], for a [color] that was left unspecified. */
+        @Stable
+        public fun defaultColor(darkTheme: Boolean): Color =
+            if (darkTheme) DarkThemeColor else LightThemeColor
     }
 }
 
@@ -52,7 +79,13 @@ public data class Shadow(
 public fun lerp(start: Shadow, stop: Shadow, fraction: Float): Shadow = Shadow(
     radius = lerp(start.radius, stop.radius, fraction),
     offset = lerp(start.offset, stop.offset, fraction),
-    color = lerp(start.color, stop.color, fraction),
+    // An unspecified colour has no channels to interpolate — it is a request to be resolved later,
+    // not a value — so it is switched rather than mixed, the way the blend mode is.
+    color = if (start.color.isSpecified && stop.color.isSpecified) {
+        lerp(start.color, stop.color, fraction)
+    } else {
+        if (fraction < 0.5f) start.color else stop.color
+    },
     alpha = lerp(start.alpha, stop.alpha, fraction),
     blendMode = if (fraction < 0.5f) start.blendMode else stop.blendMode
 )

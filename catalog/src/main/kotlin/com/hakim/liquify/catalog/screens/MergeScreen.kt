@@ -45,6 +45,7 @@ import com.hakim.liquify.catalog.ui.components.LiquidToggle
 import com.hakim.liquify.catalog.ui.drawGlyph
 import com.hakim.liquify.group.LiquidGlassGroup
 import com.hakim.liquify.liquify
+import com.hakim.liquify.material.LocalGlassMaterial
 import kotlin.math.roundToInt
 
 private val Glyphs = listOf(Glyph.Circle, Glyph.Triangle, Glyph.Square, Glyph.Hexagon)
@@ -97,7 +98,8 @@ fun MergeScreen(backdrop: Backdrop) {
             modifier = Modifier.fillMaxWidth().height(200.dp),
             effects = mergeEffects,
             merge = strength,
-            contentAlignment = Alignment.Center
+            contentAlignment = Alignment.Center,
+            material = LocalGlassMaterial.current
         ) {
             repeat(count) { index ->
                 // Symmetric around the centre, so the group grows and shrinks in place.
