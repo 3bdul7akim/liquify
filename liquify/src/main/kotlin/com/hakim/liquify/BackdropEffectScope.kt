@@ -17,6 +17,7 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
+import com.hakim.liquify.effects.ColorFilterCache
 import com.hakim.liquify.effects.MAX_GRADIENT_BLUR_STEPS
 
 /**
@@ -104,6 +105,13 @@ internal abstract class BaseBackdropEffectScope : BackdropEffectScope {
     val gradientBlurUniforms: LongArray =
         LongArray(MAX_GRADIENT_BLUR_STEPS + 1) { Long.MIN_VALUE }
 
+    /**
+     * The colour-matrix filters this scope's effects block has built, kept while their inputs are
+     * unchanged. See [ColorFilterCache] — an effects block driven by a press or a transition runs
+     * every frame, and each of these is three allocations plus a platform filter.
+     */
+    val colorFilters: ColorFilterCache = ColorFilterCache()
+
     private val runtimeShaderCache = RuntimeShaderCacheImpl()
 
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)
@@ -154,6 +162,7 @@ internal abstract class BaseBackdropEffectScope : BackdropEffectScope {
         // no longer known.
         lensUniforms = Long.MIN_VALUE
         gradientBlurUniforms.fill(Long.MIN_VALUE)
+        colorFilters.clear()
         runtimeShaderCache.clear()
     }
 }

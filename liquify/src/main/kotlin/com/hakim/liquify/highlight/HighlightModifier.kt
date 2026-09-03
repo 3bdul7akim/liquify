@@ -113,33 +113,46 @@ internal class HighlightNode(
         layer.alpha = highlight.alpha
         layer.blendMode = highlight.style.blendMode
 
+        // How far this rim is allowed past the outline. Zero for every style that is a reflection
+        // on the glass itself; non-zero only for one that draws a line beyond the edge as well.
+        val outset = highlight.style.outsetWidth.toPx()
+        // Slack around the recording. The blur softens the stroke outwards, and a rim that draws
+        // past the outline needs its own reach on top of that — without this the outer band would
+        // be sliced off flat by the layer's own bounds.
+        val slack = ceil(1f + outset + highlight.blurRadius.toPx())
+
         val key = recordingKey(highlight)
         if (!hasRecording || key != recordedKey) {
             recordedKey = key
             hasRecording = true
 
-            // One pixel of slack on every side so the blurred stroke is not clipped by the layer.
-            val safeSize = IntSize(ceil(size.width).toInt() + 2, ceil(size.height).toInt() + 2)
+            val safeSize = IntSize(
+                ceil(size.width + slack * 2f).toInt(),
+                ceil(size.height + slack * 2f).toInt()
+            )
             val outline = shapeProvider.shape.createOutline(size, layoutDirection, this)
             val clipPath =
                 if (outline is Outline.Rounded) clipPath ?: Path().also { clipPath = it } else null
 
-            configurePaint(highlight)
+            configurePaint(highlight, outset)
 
             layer.record(safeSize) {
-                translate(1f, 1f) {
+                translate(slack, slack) {
                     val canvas = drawContext.canvas
                     canvas.save()
                     // Clipping to the outline keeps the outer half of the stroke off the screen, so
-                    // a wide rim grows inwards instead of bleeding past the element's edge.
-                    canvas.clipOutline(outline, clipPath)
+                    // a wide rim grows inwards instead of bleeding past the element's edge. A style
+                    // that *wants* to draw outside — a shadow hairline just beyond the glass — says
+                    // so with `outsetWidth`, and then the stroke straddles the outline instead and
+                    // the shader decides what each side of it gets.
+                    if (outset <= 0f) canvas.clipOutline(outline, clipPath)
                     canvas.drawOutline(outline, paint)
                     canvas.restore()
                 }
             }
         }
 
-        translate(-1f, -1f) {
+        translate(-slack, -slack) {
             drawLayer(layer)
         }
     }
@@ -184,17 +197,18 @@ internal class HighlightNode(
         runtimeShaderCache.clear()
     }
 
-    private fun DrawScope.configurePaint(highlight: Highlight) {
+    private fun DrawScope.configurePaint(highlight: Highlight, outset: Float) {
         // Most styles hand themselves straight back — a specular rim is white over anything. One
-        // does not: HighlightStyle.TwSe flips with the surface it sits on, and this is where it
-        // learns which that is. Only reached when the recording actually changes, so a style is
-        // free to allocate here.
+        // does not: HighlightStyle.TwSe resolves its two tones against the surface it sits on, and
+        // this is where it learns which that is. Only reached when the recording actually changes,
+        // so a style is free to allocate here.
         val style = highlight.style.resolvedFor(darkTheme)
 
         paint.color = style.color
-        // Doubled because the outer half is clipped away by the outline above.
-        paint.strokeWidth =
-            ceil(highlight.width.toPx().fastCoerceAtMost(size.minDimension / 2f)) * 2f
+        // Doubled because half of the stroke is thrown away: clipped off outside the outline for an
+        // ordinary rim, or — for one that straddles the border — spent on the far side of it.
+        val width = highlight.width.toPx().fastCoerceAtMost(size.minDimension / 2f)
+        paint.strokeWidth = ceil(maxOf(width, outset)) * 2f
         paint.blur(highlight.blurRadius.toPx())
         if (isRuntimeShaderSupported()) {
             val shader = with(style) {

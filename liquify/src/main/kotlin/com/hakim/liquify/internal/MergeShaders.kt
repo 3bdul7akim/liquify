@@ -140,11 +140,11 @@ float blendWeight(float a, float b, float k) {
 $uniforms
 
 float radiusAt(float2 coord, float4 radii) {
-    if (coord.x >= 0.0) {
-        return coord.y <= 0.0 ? radii.y : radii.z;
-    } else {
-        return coord.y <= 0.0 ? radii.x : radii.w;
-    }
+    // Branchless, and it matters more here than anywhere else: this runs once per member for the
+    // distance and four more times for the central-difference gradient, so a full group evaluated
+    // it sixty times per pixel. As nested ifs every one of those was a divergent branch.
+    float2 pair = mix(radii.xw, radii.yz, step(0.0, coord.x));
+    return mix(pair.y, pair.x, step(0.0, -coord.y));
 }
 
 float sdElement(float2 coord, float4 rect, float4 radii) {
@@ -268,6 +268,9 @@ uniform float2 offset;
 // 1 / aaWidth. The coverage ramp is evaluated on every pixel of the layer, including the ones the
 // mask rejects, so the divide it used to do was the most-executed instruction in the program.
 uniform float aaInverse;
+// The union of the members widened by the reach of the blend, in group content space. See the
+// reject at the top of main().
+uniform float4 bounds;
 
 uniform float refractionHeight;
 uniform float refractionHeightInverse;
@@ -286,6 +289,16 @@ ${mergePrelude(count, tinted)}
 
 half4 main(float2 coord) {
     float2 p = coord + offset;
+
+    // Four compares before any field is touched. The layer is deliberately larger than the surface
+    // — it carries the blur halo the effect chain reserved — and every pixel out there used to
+    // evaluate all twelve distance fields just to be thrown away by the coverage test below.
+    // `bounds` is the union of the members widened past anything the blend can reach; see where it
+    // is computed for why one blend radius is the bound however many members there are.
+    if (p.x < bounds.x || p.y < bounds.y || p.x > bounds.z || p.y > bounds.w) {
+        return half4(0.0);
+    }
+
 ${fieldSetup(count, tinted)}
     float sd = field.x;
 
@@ -364,13 +377,24 @@ uniform float2 offset;
 // 1 / aaWidth, as in the glass pass — and it matters more here, because the shadow layer is two
 // blur radii larger than the surface on every side and this runs on all of it.
 uniform float aaInverse;
+// The union of the members widened by the reach of the blend, in group content space.
+uniform float4 bounds;
 layout(color) uniform half4 color;
 uniform float colorAlpha;
 
 ${mergePrelude(count, tinted = false)}
 
 half4 main(float2 coord) {
-    float sd = sceneDistance(coord + offset);
+    float2 p = coord + offset;
+
+    // The same reject as the glass pass, and this is where it earns the most: the shadow layer is
+    // two blur radii larger than the surface on every side, so the great majority of its pixels
+    // lie outside the silhouette entirely and were evaluating every member's field to prove it.
+    if (p.x < bounds.x || p.y < bounds.y || p.x > bounds.z || p.y > bounds.w) {
+        return half4(0.0);
+    }
+
+    float sd = sceneDistance(p);
     float mask = clamp(0.5 - sd * aaInverse, 0.0, 1.0);
     // Premultiplied: colour is supplied opaque and the coverage carries the alpha.
     return half4(color.rgb, 1.0) * half(mask * colorAlpha);

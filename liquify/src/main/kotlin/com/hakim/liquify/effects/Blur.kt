@@ -164,7 +164,16 @@ public fun BackdropEffectScope.gradientBlur(
     val stopCount = steps.coerceIn(1, MAX_GRADIENT_BLUR_STEPS)
 
     // The ramp divided by this on every pixel of every branch; the shader multiplies instead.
-    val fadeWidthInverse = 1f / fadeWidth.fastCoerceAtLeast(0.0001f)
+    val fadeWidthClamped = fadeWidth.fastCoerceAtLeast(0.0001f)
+    val fadeWidthInverse = 1f / fadeWidthClamped
+    // Depth at which the ramp saturates. Past it the weight no longer depends on the exact
+    // distance, which is what lets the shader skip the field for interior pixels entirely.
+    val saturateDepth = clearWidth + fadeWidthClamped
+
+    // Centring was an add and a subtract per pixel, per branch, for a translation that is the same
+    // for all of them.
+    val halfWidth = size.width * 0.5f
+    val halfHeight = size.height * 0.5f
 
     // Snapshot: every branch has to hang off the state of the chain as it was, not off what this
     // function is building. Passing the identical instance to each of them also gives Skia one
@@ -202,11 +211,12 @@ public fun BackdropEffectScope.gradientBlur(
         if (fingerprint != scope.gradientBlurUniforms[stop]) {
             scope.gradientBlurUniforms[stop] = fingerprint
             weights.apply {
-                setFloatUniform("size", size.width, size.height)
-                setFloatUniform("offset", -padding, -padding)
+                setFloatUniform("halfSize", halfWidth, halfHeight)
+                setFloatUniform("centerOffset", -padding - halfWidth, -padding - halfHeight)
                 setFloatUniform("cornerRadii", cornerRadii)
                 setFloatUniform("clearWidth", clearWidth)
                 setFloatUniform("fadeWidthInverse", fadeWidthInverse)
+                setFloatUniform("saturateDepth", saturateDepth)
                 setFloatUniform("stopIndex", stop.toFloat())
                 setFloatUniform("stopCount", stopCount.toFloat())
             }

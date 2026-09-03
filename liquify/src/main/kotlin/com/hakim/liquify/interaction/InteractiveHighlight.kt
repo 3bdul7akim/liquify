@@ -146,6 +146,19 @@ public class InteractiveHighlight(
      */
     private var glowBrush: ShaderBrush? = null
 
+    /**
+     * What was last written to the illumination program.
+     *
+     * Uploading a uniform discards the native shader the platform has already built, so the next
+     * draw recompiles it. The hotspot only actually moves while a finger is dragging: a press that
+     * holds still, and every frame of the release once the springs have settled, was rebuilding the
+     * program to write the values it already held.
+     */
+    private var uploadedGlowColor: Color = Color.Unspecified
+    private var uploadedGlowRadius: Float = Float.NaN
+    private var uploadedGlowX: Float = Float.NaN
+    private var uploadedGlowY: Float = Float.NaN
+
     /** `0f` at rest, `1f` while held. */
     public val pressProgress: Float get() = pressProgressAnimation.value
 
@@ -263,14 +276,23 @@ public class InteractiveHighlight(
                 drawRect(glowColor.copy(alpha = 0.08f * progress), blendMode = BlendMode.Plus)
 
                 val litPosition = position(size, positionAnimation.value)
-                shader.apply {
-                    setColorUniform("color", glowColor.copy(alpha = glowIntensity * progress))
-                    setFloatUniform("radius", size.minDimension * 1.5f)
-                    setFloatUniform(
-                        "position",
-                        litPosition.x.fastCoerceIn(0f, size.width),
-                        litPosition.y.fastCoerceIn(0f, size.height)
-                    )
+                val litColor = glowColor.copy(alpha = glowIntensity * progress)
+                val litRadius = size.minDimension * 1.5f
+                val litX = litPosition.x.fastCoerceIn(0f, size.width)
+                val litY = litPosition.y.fastCoerceIn(0f, size.height)
+                // Written only when they have actually moved — see the fields these compare with.
+                if (litColor != uploadedGlowColor) {
+                    uploadedGlowColor = litColor
+                    shader.setColorUniform("color", litColor)
+                }
+                if (litRadius != uploadedGlowRadius) {
+                    uploadedGlowRadius = litRadius
+                    shader.setFloatUniform("radius", litRadius)
+                }
+                if (litX != uploadedGlowX || litY != uploadedGlowY) {
+                    uploadedGlowX = litX
+                    uploadedGlowY = litY
+                    shader.setFloatUniform("position", litX, litY)
                 }
                 val brush = glowBrush
                     ?: ShaderBrush(shader.asComposeShader()).also { glowBrush = it }

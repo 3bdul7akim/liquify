@@ -603,10 +603,15 @@ private class LiquidGlassGroupNode(
     }
 
     /**
-     * Uploads each member's geometry to its own `float4` uniforms.
+     * Uploads each member's geometry to its own `float4` uniforms, and the bounding box they add
+     * up to.
      *
      * One call per member per frame rather than three array uploads, because the programs declare
      * individual uniforms — see [mergeGlassShader] for why arrays are not an option.
+     *
+     * The box is accumulated here rather than from the untransformed members further up, because
+     * this is where the stretch scale is applied and the shader has to reject against the geometry
+     * it will actually evaluate.
      *
      * Only reachable past the [isRuntimeShaderSupported] guard at the top of [draw].
      */
@@ -617,6 +622,12 @@ private class LiquidGlassGroupNode(
         density: Density,
         tinted: Boolean
     ) {
+        var boundsLeft = Float.POSITIVE_INFINITY
+        var boundsTop = Float.POSITIVE_INFINITY
+        var boundsRight = Float.NEGATIVE_INFINITY
+        var boundsBottom = Float.NEGATIVE_INFINITY
+        var maxMergeRadius = 0f
+
         for (i in 0 until count) {
             val member = members[i]
             // A stretching member swells via a layer scale, which layout never sees. Applying the
@@ -644,6 +655,12 @@ private class LiquidGlassGroupNode(
             val centerY = member.centerY + member.halfHeight * (scale.y - 1f)
 
             setFloatUniform(UniformRect[i], centerX, centerY, halfWidth, halfHeight)
+            boundsLeft = minOf(boundsLeft, centerX - halfWidth)
+            boundsTop = minOf(boundsTop, centerY - halfHeight)
+            boundsRight = maxOf(boundsRight, centerX + halfWidth)
+            boundsBottom = maxOf(boundsBottom, centerY + halfHeight)
+            maxMergeRadius = maxOf(maxMergeRadius, member.mergeRadius)
+
             val radii = member.cornerRadii
             setFloatUniform(
                 UniformRadii[i],
@@ -666,6 +683,24 @@ private class LiquidGlassGroupNode(
                 )
             }
         }
+
+        // How far outside the members the merged surface can possibly reach.
+        //
+        // One smooth minimum dips a quarter of the blend radius below `min(a, b)`, but they are
+        // chained, and each step can dip again — so a quarter is *not* the bound for a group of
+        // twelve. What does bound it is that the blend saturates: once the running distance falls a
+        // full `k` below the next member's, the mix factor pins to 1 and further members leave it
+        // untouched. So the field never goes deeper than one blend radius below the nearest
+        // member's own distance, whatever the member count, and a pixel a full `k` outside every
+        // member is certainly not covered. Two more pixels absorb the coverage ramp.
+        val margin = maxMergeRadius + 2f
+        setFloatUniform(
+            "bounds",
+            boundsLeft - margin,
+            boundsTop - margin,
+            boundsRight + margin,
+            boundsBottom + margin
+        )
     }
 
     /**

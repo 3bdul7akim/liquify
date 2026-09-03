@@ -80,6 +80,12 @@ public fun BackdropEffectScope.lens(
     val halfArea = size.width * size.height * 0.25f
     val dispersionScale = if (halfArea > 0f) 1f / halfArea else 0f
 
+    // Half the element, the translation that centres a layer coordinate on it, and the bound on
+    // the gradient radius. All three were recomputed per pixel from `size` and `offset` for values
+    // that are the same across the whole draw.
+    val halfWidth = size.width * 0.5f
+    val halfHeight = size.height * 0.5f
+
     // Uploading a uniform discards the platform shader's built native instance, so an effects
     // block re-running because one animated value moved would pay to rebuild the program even
     // where nothing it reads has changed. The variant is part of the fingerprint because the two
@@ -97,8 +103,9 @@ public fun BackdropEffectScope.lens(
     if (fingerprint != scope.lensUniforms) {
         scope.lensUniforms = fingerprint
         shader.apply {
-            setFloatUniform("size", size.width, size.height)
-            setFloatUniform("offset", -padding, -padding)
+            setFloatUniform("halfSize", halfWidth, halfHeight)
+            setFloatUniform("centerOffset", -padding - halfWidth, -padding - halfHeight)
+            setFloatUniform("halfMinSize", minOf(halfWidth, halfHeight))
             setFloatUniform("cornerRadii", cornerRadii)
             setFloatUniform("refractionHeight", refractionHeight)
             setFloatUniform("refractionHeightInverse", refractionHeightInverse)

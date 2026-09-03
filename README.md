@@ -560,28 +560,39 @@ same pair on `InnerShadow`.
 | `Default(angle, falloff)` | Directional, lit from a fixed angle. |
 | `Ambient(intensity, angle, falloff)` | White on the lit side, dark opposite — reads as a bevel. |
 | `Dynamic(color, pointer, focus, falloff)` | Follows the pointer. `interaction.dynamicHighlight()` builds one for you. |
-| `TwSe(color, inverseColor, angle, falloff, seamBlend)` | Directional like `Default`, but its quadrants alternate and its tone follows the theme. |
+| `TwSe(color, inverseColor, angle, falloff, innerWidth, outerWidth, ambient)` | A drawn edge: light hairline inside the outline, dark hairline outside it. |
 
-`TwSe` is the one rim that knows what it is drawn on. Left to itself it is **white over a dark UI
-and black over a light one** — it reads as a drawn bevel rather than as a reflection, and a white
-bevel on a white background is not there. On top of that its four quadrants alternate between that
-tone and its opposite: white at the top-left, black at the top-right, white again at the
-bottom-right, black at the bottom-left, so one light appears to cross a raised edge.
+`TwSe` is the one rim that draws **past** the element. A light band sits just inside the outline and
+a dark one just outside it, each fading to nothing as it leaves the border, and the two are divided
+at the border rather than blended across it. That is what a raised lip of glass does — the inner
+face catches the light, and the body drops a hairline of shadow onto whatever it is sitting on.
+Letting the two blend would collapse them into one soft line straddling the edge, which is the thing
+this style exists not to be.
 
-`seamBlend` is how far the change from one tone to the other is spread, out from the midpoint of an
-edge. `Dp.Unspecified` — the default — scales it with the element so the sweep covers most of every
-edge whatever the size, and only the corners settle on a pure tone; that is what makes the rim read
-as one gradient rather than as four flat quadrants meeting at a seam. A `Dp` is absolute on both
-axes, and `0.dp` gives a hard switch. Set `color` to opt out of the theme and `inverseColor` to
-choose the other tone rather than having it derived by inversion.
+`innerWidth` and `outerWidth` are how far each band reaches from the border, `1.dp` each by default.
+`ambient` is how much of the rim survives where the border faces away from the light — at `0f` it
+vanishes on two sides and reads as a broken outline rather than an edge.
+
+It is also the one rim that is **identical in a light UI and a dark one**. The others are
+reflections and have to know what they are reflecting off; this is a lit edge with its own shadow
+under it, and an edge does not swap which side faces the light because the page behind it got
+darker — inverting it would turn the lip inside out. Set `color` / `inverseColor` to override either
+tone.
 
 ```kotlin
 Modifier.liquify(RoundedRectangle(28.dp), highlight = Highlight.TwSe)
 ```
 
-Inside a `LiquidGlassGroup` it falls back to a plain directional rim in the resolved tone: a merged
-silhouette has no quadrants of its own, and inventing some would draw a seam through the bridges
-merging exists to dissolve.
+`Highlight.TwSe` carries `blurRadius = 0.dp` on purpose: the gradient is the shader's own, and a
+mask blur on top of it would soften the division between the bands, which is the one part that has
+to stay crisp.
+
+A style that reaches outside the outline says so with `HighlightStyle.outsetWidth`, which is what
+tells the rim node to centre the stroke on the border instead of clipping it away, and to record
+with that much slack around the element. Every other style leaves it at `0.dp`.
+
+Inside a `LiquidGlassGroup` it falls back to a plain directional rim in the lit tone: the merged
+surface's rim is drawn inside the merge program, which has one silhouette and no outside to draw on.
 
 Shadows are punched out under the element, so they never darken the backdrop seen *through* the
 glass.

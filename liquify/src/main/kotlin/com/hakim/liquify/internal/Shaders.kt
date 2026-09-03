@@ -27,11 +27,12 @@ import org.intellij.lang.annotations.Language
 @Language("AGSL")
 internal const val ROUNDED_RECT_SDF: String = """
 float radiusAt(float2 coord, float4 radii) {
-    if (coord.x >= 0.0) {
-        return coord.y <= 0.0 ? radii.y : radii.z;
-    } else {
-        return coord.y <= 0.0 ? radii.x : radii.w;
-    }
+    // Branchless. As nested ifs this was two divergent branches on every pixel of every field
+    // evaluation — and the merge pass evaluates the field five times per pixel per member, so a
+    // quad straddling either centre line paid for both sides of both branches. `step` and `mix`
+    // compile to selects, which have no such cost.
+    float2 pair = mix(radii.xw, radii.yz, step(0.0, coord.x));
+    return mix(pair.y, pair.x, step(0.0, -coord.y));
 }
 
 float sdRoundedRect(float2 coord, float2 halfSize, float radius) {
@@ -60,8 +61,13 @@ float circleMap(float x) {
 internal const val REFRACTION_SHADER: String = """
 uniform shader content;
 
-uniform float2 size;
-uniform float2 offset;
+uniform float2 halfSize;
+// `offset - halfSize`, folded on the CPU. Centring the coordinate was an add and a subtract on
+// every pixel of the layer to arrive at a translation that is the same for all of them.
+uniform float2 centerOffset;
+// min(halfSize.x, halfSize.y), also folded. It bounded the gradient radius on every pixel of the
+// band, again for a value that does not vary across the draw.
+uniform float halfMinSize;
 uniform float4 cornerRadii;
 uniform float refractionHeight;
 // 1 / refractionHeight, folded on the CPU. Every pixel inside the band divided by it to arrive at
@@ -73,8 +79,7 @@ uniform float depthEffect;
 $ROUNDED_RECT_SDF
 
 half4 main(float2 coord) {
-    float2 halfSize = size * 0.5;
-    float2 centeredCoord = (coord + offset) - halfSize;
+    float2 centeredCoord = coord + centerOffset;
     float radius = radiusAt(centeredCoord, cornerRadii);
 
     // Conservative interior test, before the field itself. Rounding only ever pulls the boundary
@@ -95,7 +100,7 @@ half4 main(float2 coord) {
 
     // sd is negative here, so 1 - (-sd)/h is 1 + sd * (1/h) — the same value without the divide.
     float d = circleMap(1.0 + sd * refractionHeightInverse) * refractionAmount;
-    float gradRadius = min(radius * 1.5, min(halfSize.x, halfSize.y));
+    float gradRadius = min(radius * 1.5, halfMinSize);
     // gradSdRoundedRect already returns a unit vector — both of its branches do — so without a
     // depth term the outer normalize() is a no-op and the inner one is computed only to be
     // multiplied by zero. depthEffect is a uniform, so this branch is coherent across the entire
@@ -116,8 +121,10 @@ half4 main(float2 coord) {
 internal const val REFRACTION_DISPERSION_SHADER: String = """
 uniform shader content;
 
-uniform float2 size;
-uniform float2 offset;
+uniform float2 halfSize;
+// See the plain refraction program: both of these are folded on the CPU.
+uniform float2 centerOffset;
+uniform float halfMinSize;
 uniform float4 cornerRadii;
 uniform float refractionHeight;
 // 1 / refractionHeight, folded on the CPU. Every pixel inside the band divided by it to arrive at
@@ -132,8 +139,7 @@ uniform float dispersionScale;
 $ROUNDED_RECT_SDF
 
 half4 main(float2 coord) {
-    float2 halfSize = size * 0.5;
-    float2 centeredCoord = (coord + offset) - halfSize;
+    float2 centeredCoord = coord + centerOffset;
     float radius = radiusAt(centeredCoord, cornerRadii);
 
     // Conservative interior test, before the field itself. Rounding only ever pulls the boundary
@@ -154,7 +160,7 @@ half4 main(float2 coord) {
 
     // sd is negative here, so 1 - (-sd)/h is 1 + sd * (1/h) — the same value without the divide.
     float d = circleMap(1.0 + sd * refractionHeightInverse) * refractionAmount;
-    float gradRadius = min(radius * 1.5, min(halfSize.x, halfSize.y));
+    float gradRadius = min(radius * 1.5, halfMinSize);
     // gradSdRoundedRect already returns a unit vector — both of its branches do — so without a
     // depth term the outer normalize() is a no-op and the inner one is computed only to be
     // multiplied by zero. depthEffect is a uniform, so this branch is coherent across the entire
@@ -228,27 +234,38 @@ half4 main(float2 coord) {
 internal const val GRADIENT_BLUR_SHADER: String = """
 uniform shader content;
 
-uniform float2 size;
-uniform float2 offset;
+uniform float2 halfSize;
+// `offset - halfSize`, folded on the CPU, as in the refraction program.
+uniform float2 centerOffset;
 uniform float4 cornerRadii;
 uniform float clearWidth;
 // 1 / fadeWidth, clamped and folded on the CPU. The ramp divided by it on every pixel of every
 // branch, and there is one branch per stop.
 uniform float fadeWidthInverse;
+// clearWidth + fadeWidth. Past this depth the ramp is saturated whatever the exact distance is,
+// which is what lets the interior test below skip the field entirely.
+uniform float saturateDepth;
 uniform float stopIndex;
 uniform float stopCount;
 
 $ROUNDED_RECT_SDF
 
 half4 main(float2 coord) {
-    float2 halfSize = size * 0.5;
-    float2 centeredCoord = (coord + offset) - halfSize;
+    float2 centeredCoord = coord + centerOffset;
     float radius = radiusAt(centeredCoord, cornerRadii);
 
-    // How far inside the outline this pixel sits. Negative outside, which clamps away below.
-    float depth = -sdRoundedRect(centeredCoord, halfSize, radius);
-
-    float t = clamp((depth - clearWidth) * fadeWidthInverse, 0.0, 1.0);
+    // Same conservative interior test the refraction program uses: rounding pulls the boundary
+    // inward by at most the corner radius, so a pixel this far inside the axis-aligned bounds is
+    // certainly past the end of the ramp and its weight no longer depends on the exact distance.
+    // Every one of those pixels then skips the SDF's length() — on a large frosted pane that is
+    // most of them, on every one of the branches this program is instantiated for.
+    float2 inset = halfSize - abs(centeredCoord);
+    float t = 1.0;
+    if (min(inset.x, inset.y) < saturateDepth + radius) {
+        // How far inside the outline this pixel sits. Negative outside, which clamps away below.
+        float depth = -sdRoundedRect(centeredCoord, halfSize, radius);
+        t = clamp((depth - clearWidth) * fadeWidthInverse, 0.0, 1.0);
+    }
 
     // Quintic smoothstep: zero first *and* second derivative at both ends, so the ramp neither
     // starts nor stops with a kink that the eye could read as a drawn line.
@@ -270,7 +287,10 @@ half4 main(float2 coord) {
 /** Directional rim light: brightest where the border normal faces `angle`. */
 @Language("AGSL")
 internal const val HIGHLIGHT_DEFAULT_SHADER: String = """
-uniform float2 size;
+uniform float2 halfSize;
+// min(halfSize.x, halfSize.y), folded on the CPU: it bounded the gradient radius on every pixel of
+// the element for a value that is the same across the draw.
+uniform float halfMinSize;
 uniform float4 cornerRadii;
 layout(color) uniform half4 color;
 // Precomputed on the CPU. As an angle this cost a cos() and a sin() for every pixel of the
@@ -281,11 +301,10 @@ uniform float falloff;
 $ROUNDED_RECT_SDF
 
 half4 main(float2 coord) {
-    float2 halfSize = size * 0.5;
     float2 centeredCoord = coord - halfSize;
     float radius = radiusAt(centeredCoord, cornerRadii);
 
-    float gradRadius = min(radius * 1.5, min(halfSize.x, halfSize.y));
+    float gradRadius = min(radius * 1.5, halfMinSize);
     float2 grad = gradSdRoundedRect(centeredCoord, halfSize, gradRadius);
     // pow() is among the most expensive things a fragment can do, and the default falloff of 1
     // makes it the identity. The exponent is a uniform, so this branch is coherent across the
@@ -298,7 +317,9 @@ half4 main(float2 coord) {
 /** Rim light that goes white on the lit side and black on the unlit side. */
 @Language("AGSL")
 internal const val HIGHLIGHT_AMBIENT_SHADER: String = """
-uniform float2 size;
+uniform float2 halfSize;
+// Folded on the CPU, as in the directional rim.
+uniform float halfMinSize;
 uniform float4 cornerRadii;
 // Precomputed on the CPU. As an angle this cost a cos() and a sin() for every pixel of the
 // element, on every frame, to arrive at a value that is the same for all of them.
@@ -308,11 +329,10 @@ uniform float falloff;
 $ROUNDED_RECT_SDF
 
 half4 main(float2 coord) {
-    float2 halfSize = size * 0.5;
     float2 centeredCoord = coord - halfSize;
     float radius = radiusAt(centeredCoord, cornerRadii);
 
-    float gradRadius = min(radius * 1.5, min(halfSize.x, halfSize.y));
+    float gradRadius = min(radius * 1.5, halfMinSize);
     float2 grad = gradSdRoundedRect(centeredCoord, halfSize, gradRadius);
     float d = dot(grad, lightNormal);
     // As in the directional rim: a falloff of 1 makes pow() the identity, and the exponent is a
@@ -324,54 +344,68 @@ half4 main(float2 coord) {
 }"""
 
 /**
- * Directional rim whose four quadrants alternate between a tone and its opposite.
+ * A drawn edge rather than a reflection: a light hairline just *inside* the outline and a dark one
+ * just *outside* it, each fading to nothing as it leaves the border, and divided from each other at
+ * the border itself.
  *
- * The two diagonals agree — top-left with bottom-right, top-right with bottom-left — so the border
- * reads as a bevel catching light from one direction and shadow from the other, rather than as four
- * unrelated arcs.
+ * This is the only rim in the library that draws past the element, which is why it is also the only
+ * one the highlight node lets straddle the outline instead of clipping the stroke to it.
  */
 @Language("AGSL")
 internal const val HIGHLIGHT_TWSE_SHADER: String = """
-uniform float2 size;
+uniform float2 halfSize;
+// Folded on the CPU, as in the directional rim.
+uniform float halfMinSize;
 uniform float4 cornerRadii;
+// The lit tone, drawn inside the outline…
 layout(color) uniform half4 color;
+// …and the shadow tone, drawn outside it.
 layout(color) uniform half4 inverseColor;
 // Precomputed on the CPU, as in the directional rim.
 uniform float2 lightNormal;
 uniform float falloff;
-// Half-width of the crossfade between the two tones, per axis. Per axis because the sweep it
-// controls runs along an edge, and the two edges of a card are rarely the same length.
-uniform float2 seamBlend;
+// How far each band reaches from the outline before it is fully transparent, in pixels.
+uniform float innerWidth;
+uniform float outerWidth;
+// How much of the rim survives where the border faces away from the light.
+uniform float ambient;
 
 $ROUNDED_RECT_SDF
 
 half4 main(float2 coord) {
-    float2 halfSize = size * 0.5;
     float2 centeredCoord = coord - halfSize;
     float radius = radiusAt(centeredCoord, cornerRadii);
+    // Negative inside the outline, positive outside it. This is the one rim that lives on both
+    // sides of the border, so it is also the one that needs the field rather than just its gradient.
+    float sd = sdRoundedRect(centeredCoord, halfSize, radius);
 
-    float gradRadius = min(radius * 1.5, min(halfSize.x, halfSize.y));
+    // Which side of the outline this pixel is on, crossfaded across a single pixel. A hard split
+    // would alias into a stepped line along a curve, and this is exactly where the two tones meet.
+    float inside = 1.0 - smoothstep(-0.5, 0.5, sd);
+
+    // Each band is at full strength against the outline and fades away from it, and neither is
+    // allowed across to the other side. That division is the whole effect: a real raised edge
+    // catches the light on its inner face and drops a hairline of shadow onto what it sits on, and
+    // letting the two blend would collapse them into one soft line straddling the border.
+    float lit = (1.0 - smoothstep(0.0, innerWidth, max(-sd, 0.0))) * inside;
+    float shade = (1.0 - smoothstep(0.0, outerWidth, max(sd, 0.0))) * (1.0 - inside);
+
+    float gradRadius = min(radius * 1.5, halfMinSize);
     float2 grad = gradSdRoundedRect(centeredCoord, halfSize, gradRadius);
+    // pow() is among the most expensive things a fragment can do, and the default falloff of 1
+    // makes it the identity. The exponent is a uniform, so the branch is coherent across the draw.
     float aligned = abs(dot(grad, lightNormal));
-    float intensity = falloff == 1.0 ? aligned : pow(aligned, falloff);
+    float directional = falloff == 1.0 ? aligned : pow(aligned, falloff);
+    // Never all the way down to nothing: a rim that disappears on two sides stops reading as an
+    // edge and starts reading as a broken outline.
+    float intensity = mix(directional, 1.0, ambient);
 
-    // Which of the two tones this quadrant carries: 1 on the leading diagonal, 0 on the other.
-    // smoothstep rather than step, because the switch falls at the midpoint of an edge — exactly
-    // where the rim is a single row of pixels, and a hard change would alias into a visible notch.
-    //
-    // The width of that crossfade is the whole look. Kept short it reads as four flat quadrants
-    // with a hairline seam; spread across most of the half-edge — which is what an unspecified
-    // seamBlend resolves to — it becomes one continuous sweep from the lit corner to the dark one,
-    // and only the corners themselves settle on a pure tone.
-    float sx = smoothstep(-seamBlend.x, seamBlend.x, centeredCoord.x);
-    float sy = smoothstep(-seamBlend.y, seamBlend.y, centeredCoord.y);
-    float onDiagonal = sx * sy + (1.0 - sx) * (1.0 - sy);
-
-    // Premultiplied on the way out, so each tone's own alpha is the strength of that half of the
-    // rim instead of being dropped between here and the layer.
-    half4 base = half4(color.rgb * color.a, color.a);
-    half4 opposite = half4(inverseColor.rgb * inverseColor.a, inverseColor.a);
-    return mix(opposite, base, half(onDiagonal)) * half(intensity);
+    // Premultiplied on the way out, so each tone's own alpha is the strength of that band instead
+    // of being dropped between here and the layer. The two never overlap, so adding them is
+    // exactly compositing them.
+    half4 light = half4(color.rgb * color.a, color.a) * half(lit);
+    half4 dark = half4(inverseColor.rgb * inverseColor.a, inverseColor.a) * half(shade);
+    return (light + dark) * half(intensity);
 }"""
 
 /**
@@ -384,7 +418,11 @@ half4 main(float2 coord) {
  */
 @Language("AGSL")
 internal const val HIGHLIGHT_DYNAMIC_SHADER: String = """
-uniform float2 size;
+uniform float2 halfSize;
+// Folded on the CPU, as in the directional rim.
+uniform float halfMinSize;
+// max(halfSize.x, halfSize.y) * 2, also folded — the falloff radius does not vary across the draw.
+uniform float pointerReach;
 uniform float4 cornerRadii;
 layout(color) uniform half4 color;
 uniform float falloff;
@@ -394,11 +432,10 @@ uniform float pointerFocus;
 $ROUNDED_RECT_SDF
 
 half4 main(float2 coord) {
-    float2 halfSize = size * 0.5;
     float2 centeredCoord = coord - halfSize;
     float radius = radiusAt(centeredCoord, cornerRadii);
 
-    float gradRadius = min(radius * 1.5, min(halfSize.x, halfSize.y));
+    float gradRadius = min(radius * 1.5, halfMinSize);
     float2 grad = gradSdRoundedRect(centeredCoord, halfSize, gradRadius);
 
     float2 toPointer = pointer - centeredCoord;
@@ -408,8 +445,9 @@ half4 main(float2 coord) {
     float aligned = max(dot(grad, normal), 0.0);
     float facing = falloff == 1.0 ? aligned : pow(aligned, falloff);
 
-    float reach = max(halfSize.x, halfSize.y) * 2.0;
-    float proximity = 1.0 - smoothstep(0.0, reach, distance(coord, pointer + halfSize));
+    // The distance to the pointer is exactly the length already computed for the facing term —
+    // measuring it a second time cost a second sqrt on every pixel of the element.
+    float proximity = 1.0 - smoothstep(0.0, pointerReach, len);
     float intensity = mix(facing, facing * proximity, pointerFocus);
 
     return color * intensity;

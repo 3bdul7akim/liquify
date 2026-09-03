@@ -48,13 +48,16 @@ public data class Highlight(
         public val Plain: Highlight = Highlight(style = HighlightStyle.Plain)
 
         /**
-         * Directional rim whose quadrants alternate between a tone and its opposite, and whose
-         * tone follows the theme — white over a dark UI, black over a light one.
+         * A drawn edge: a light hairline just inside the outline and a dark one just outside it,
+         * each fading away from the border.
          *
-         * Wider than the others by default: two tones need room to be told apart.
+         * [blurRadius] is deliberately zero. The gradient is the shader's own, and a mask blur on
+         * top of it would soften the division between the two bands, which is the one part of this
+         * rim that has to stay crisp.
          */
         @Stable
-        public val TwSe: Highlight = Highlight(width = 1f.dp, style = HighlightStyle.TwSe)
+        public val TwSe: Highlight =
+            Highlight(width = 1f.dp, blurRadius = 0f.dp, style = HighlightStyle.TwSe)
 
         /**
          * Rim that follows a pointer. Feed it a live position, e.g. from

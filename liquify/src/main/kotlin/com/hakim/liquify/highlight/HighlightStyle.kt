@@ -17,7 +17,7 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.takeOrElse
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.isSpecified
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.fastCoerceAtLeast
 import com.hakim.liquify.RuntimeShader
 import com.hakim.liquify.RuntimeShaderCache
@@ -55,6 +55,20 @@ public interface HighlightStyle {
      * silhouette's rim, so an implementation may allocate; it is not on the per-frame path.
      */
     public fun resolvedFor(darkTheme: Boolean): HighlightStyle = this
+
+    /**
+     * How far this rim is allowed to reach *outside* the element's outline.
+     *
+     * `0.dp` — every style but [TwSe] — means the rim is a reflection on the glass itself, and the
+     * node clips the stroke to the outline: a wide rim then grows inwards and nothing ever spills
+     * past the edge. A style that deliberately draws beyond the edge declares its reach here, and
+     * the stroke is centred on the outline and recorded with that much slack around the element
+     * instead.
+     *
+     * It is the reach the *stroke* needs, not just the outward band: a style whose inner band is
+     * the wider of the two must report that, or the stroke will clip it.
+     */
+    public val outsetWidth: Dp get() = 0.dp
 
     public fun DrawScope.createShader(
         shape: Shape,
@@ -98,7 +112,8 @@ public interface HighlightStyle {
             return runtimeShaderCache
                 .obtainRuntimeShader("liquify.highlight.default", HIGHLIGHT_DEFAULT_SHADER)
                 .apply {
-                    setFloatUniform("size", size.width, size.height)
+                    setFloatUniform("halfSize", size.width * 0.5f, size.height * 0.5f)
+                    setFloatUniform("halfMinSize", size.minDimension * 0.5f)
                     setFloatUniform("cornerRadii", cornerRadii)
                     setColorUniform("color", color.copy(alpha = 1f))
                     angle.toRadians().let { setFloatUniform("lightNormal", cos(it), sin(it)) }
@@ -131,7 +146,8 @@ public interface HighlightStyle {
             return runtimeShaderCache
                 .obtainRuntimeShader("liquify.highlight.ambient", HIGHLIGHT_AMBIENT_SHADER)
                 .apply {
-                    setFloatUniform("size", size.width, size.height)
+                    setFloatUniform("halfSize", size.width * 0.5f, size.height * 0.5f)
+                    setFloatUniform("halfMinSize", size.minDimension * 0.5f)
                     setFloatUniform("cornerRadii", cornerRadii)
                     angle.toRadians().let { setFloatUniform("lightNormal", cos(it), sin(it)) }
                     setFloatUniform("falloff", falloff)
@@ -140,39 +156,40 @@ public interface HighlightStyle {
     }
 
     /**
-     * Directional rim, like [Default], whose four quadrants alternate between a tone and its
-     * opposite — and whose tone follows the theme.
+     * A drawn edge rather than a reflection: a light hairline just **inside** the outline and a
+     * dark one just **outside** it, each fading to nothing as it leaves the border.
      *
-     * Two things separate it from [Default]:
+     * This is what a raised lip of glass actually does — the inner face catches the light, and the
+     * body drops a hairline of shadow onto whatever it is sitting on. The two bands are divided at
+     * the border and never blend into one another; letting them would collapse the pair into a
+     * single soft line straddling the edge, which is the thing this style exists not to be.
      *
-     * - **It flips with the surface.** Left unspecified, [color] is white over a dark UI and
-     *   **black over a light one**. A white specular rim is a reflection and works over anything;
-     *   this style is closer to a drawn bevel, and a bevel lit in white on a light background has
-     *   nothing to stand against.
-     * - **The corners alternate.** [color] runs along the top-left and bottom-right quadrants and
-     *   [inverseColor] — its opposite, derived automatically — along the other two. So a rim that
-     *   is white at the top-left is black at the top-right, white again at the bottom-right and
-     *   black at the bottom-left, which reads as one light crossing a raised edge.
+     * It is the only rim in the library that draws **past** the element. The highlight node reads
+     * [outsetWidth] and, seeing it non-zero, centres the stroke on the outline instead of clipping
+     * it away, and records the layer with that much slack around the element.
      *
      * Drawn source-over rather than additively, because half of it *darkens*: `BlendMode.Plus`
-     * cannot subtract light, and the dark quadrants would simply not appear.
+     * cannot subtract light, and the outer band would simply not appear.
+     *
+     * It is also the one rim that looks **the same in a light UI and a dark one**. The others are
+     * reflections and have to know what they are reflecting off; this is a lit edge with its own
+     * shadow under it, and an edge does not swap which side faces the light because the page behind
+     * it got darker.
      *
      * Inside a [LiquidGlassGroup][com.hakim.liquify.group.LiquidGlassGroup] this degrades to a
-     * plain directional rim in the resolved tone. A merged surface has one silhouette and no
-     * quadrants of its own to alternate across, and giving it some would put a seam through exactly
-     * the bridges that merging exists to dissolve.
+     * plain directional rim in the lit tone. The merged surface's rim is rendered inside the merge
+     * program, which has one silhouette and no outside to draw on.
      *
-     * @param color the tone of the leading diagonal. [Color.Unspecified] — the default — resolves
-     *   against the theme; its alpha is the strength of the rim.
-     * @param inverseColor the tone of the other two quadrants. [Color.Unspecified] derives it by
-     *   inverting [color], which is what turns white into black.
+     * @param color the lit band, inside the outline. [Color.Unspecified] — the default — is a
+     *   fixed white; its alpha is the strength of that band.
+     * @param inverseColor the shadow band, outside it. Unspecified is a fixed black.
      * @param angle direction of the light in degrees, as in [Default].
      * @param falloff how sharply the rim fades away from that direction. Higher is tighter.
-     * @param seamBlend how far the change from one tone to the other is spread, measured out from
-     *   the midpoint of an edge in each direction. [Dp.Unspecified] — the default — scales it with
-     *   the element so the sweep covers most of every edge whatever the size, which is what makes
-     *   it read as one gradient rather than as four flat quadrants meeting at a seam. An explicit
-     *   distance is absolute and applies to both axes; `0.dp` gives a hard switch, which aliases.
+     * @param innerWidth how far the lit band reaches inside the outline before it is fully
+     *   transparent.
+     * @param outerWidth how far the shadow band reaches outside it.
+     * @param ambient how much of the rim survives where the border faces away from the light. `0f`
+     *   lets it vanish on two sides, which reads as a broken outline rather than as an edge.
      */
     @Immutable
     public data class TwSe(
@@ -181,16 +198,29 @@ public interface HighlightStyle {
         override val blendMode: BlendMode = DrawScope.DefaultBlendMode,
         val angle: Float = 45f,
         @param:FloatRange(from = 0.0) val falloff: Float = 1f,
-        val seamBlend: Dp = Dp.Unspecified
+        val innerWidth: Dp = 1f.dp,
+        val outerWidth: Dp = 1f.dp,
+        @param:FloatRange(from = 0.0, to = 1.0) val ambient: Float = 0.35f
     ) : HighlightStyle {
 
+        /**
+         * The wider of the two bands, because the stroke is centred on the outline and has to
+         * contain both — the outer one decides how far it spills, the inner one how far it must
+         * reach back before the stroke's own edge cuts the gradient short.
+         */
+        override val outsetWidth: Dp get() = maxOf(innerWidth, outerWidth)
+
+        /**
+         * Fills in whichever tone was left open. [darkTheme] is ignored on purpose: this rim looks
+         * the same in both themes — see [TwSeLitColor].
+         */
         override fun resolvedFor(darkTheme: Boolean): TwSe {
-            val tone = color.takeOrElse { twSeDefaultColor(darkTheme) }
-            val opposite = inverseColor.takeOrElse { tone.inverted() }
-            return if (tone == color && opposite == inverseColor) {
+            val lit = color.takeOrElse { TwSeLitColor }
+            val shade = inverseColor.takeOrElse { TwSeShadeColor }
+            return if (lit == color && shade == inverseColor) {
                 this
             } else {
-                copy(color = tone, inverseColor = opposite)
+                copy(color = lit, inverseColor = shade)
             }
         }
 
@@ -205,31 +235,26 @@ public interface HighlightStyle {
             // reached the program directly, and costs nothing once the colours are settled.
             val resolved = resolvedFor(darkTheme = true)
 
-            // A fixed distance cannot describe this: the crossfade runs *along* an edge, so the
-            // same 4.dp that sweeps a whole toggle is a hairline on a card. Left unspecified it is
-            // taken as a share of each half-edge instead, and the sweep looks the same at any size.
-            // The shader interpolates across ±this, so neither axis may be zero wide.
-            val blendX: Float
-            val blendY: Float
-            if (seamBlend.isSpecified) {
-                val absolute = seamBlend.toPx().fastCoerceAtLeast(MinSeamBlend)
-                blendX = absolute
-                blendY = absolute
-            } else {
-                blendX = (size.width * 0.5f * RelativeSeamBlend).fastCoerceAtLeast(MinSeamBlend)
-                blendY = (size.height * 0.5f * RelativeSeamBlend).fastCoerceAtLeast(MinSeamBlend)
-            }
-
             return runtimeShaderCache
                 .obtainRuntimeShader("liquify.highlight.twSe", HIGHLIGHT_TWSE_SHADER)
                 .apply {
-                    setFloatUniform("size", size.width, size.height)
+                    setFloatUniform("halfSize", size.width * 0.5f, size.height * 0.5f)
+                    setFloatUniform("halfMinSize", size.minDimension * 0.5f)
                     setFloatUniform("cornerRadii", cornerRadii)
                     setColorUniform("color", resolved.color)
                     setColorUniform("inverseColor", resolved.inverseColor)
                     angle.toRadians().let { setFloatUniform("lightNormal", cos(it), sin(it)) }
                     setFloatUniform("falloff", falloff)
-                    setFloatUniform("seamBlend", blendX, blendY)
+                    // The shader ramps across these, so neither may be zero wide.
+                    setFloatUniform(
+                        "innerWidth",
+                        innerWidth.toPx().fastCoerceAtLeast(MinBandWidth)
+                    )
+                    setFloatUniform(
+                        "outerWidth",
+                        outerWidth.toPx().fastCoerceAtLeast(MinBandWidth)
+                    )
+                    setFloatUniform("ambient", ambient)
                 }
         }
     }
@@ -264,7 +289,10 @@ public interface HighlightStyle {
             return runtimeShaderCache
                 .obtainRuntimeShader("liquify.highlight.dynamic", HIGHLIGHT_DYNAMIC_SHADER)
                 .apply {
-                    setFloatUniform("size", size.width, size.height)
+                    setFloatUniform("halfSize", size.width * 0.5f, size.height * 0.5f)
+                    setFloatUniform("halfMinSize", size.minDimension * 0.5f)
+                    // max(halfSize.x, halfSize.y) * 2 — the reach of the proximity falloff.
+                    setFloatUniform("pointerReach", size.maxDimension)
                     setFloatUniform("cornerRadii", cornerRadii)
                     setColorUniform("color", color.copy(alpha = 1f))
                     setFloatUniform("falloff", falloff)
@@ -292,36 +320,21 @@ public interface HighlightStyle {
 
 private fun Float.toRadians(): Float = (this * (PI / 180.0)).toFloat()
 
-/**
- * How much of each half-edge an unspecified [HighlightStyle.TwSe.seamBlend] sweeps across.
- *
- * At `0.85` the crossfade runs from one corner almost to the next, and only the corners themselves
- * settle on a pure tone — which is where they belong, because a 45° rim is at its brightest on the
- * leading diagonal and fades to nothing on the other one. Lower it and the tones flatten into
- * quadrants with a seam between them; raise it past 1 and the pure tones never appear at all.
- */
-private const val RelativeSeamBlend = 0.85f
-
-/** Floor on the crossfade width. `smoothstep` needs the two edges of its range to differ. */
-private const val MinSeamBlend = 0.0001f
+/** Floor on a band's width. `smoothstep` needs the two edges of its range to differ. */
+private const val MinBandWidth = 0.5f
 
 /**
- * The tone [HighlightStyle.TwSe] resolves an unspecified colour to.
+ * The tones [HighlightStyle.TwSe] resolves unspecified colours to.
  *
- * White over a dark UI — the same catch of light every other rim uses — and black over a light one,
- * which is the inversion that keeps a *drawn* bevel visible where a white one would disappear.
+ * Fixed, and deliberately not theme-aware — the one rim in the library that is the same in a light
+ * UI and a dark one. Every other rim is a *reflection*, and a reflection has to know what it is
+ * reflecting off; this one is a lit edge with its own shadow under it, and an edge does not change
+ * which side of itself faces the light because the page behind it got darker. Inverting them would
+ * turn the lip inside out.
  *
- * Not a companion on the style itself: a nested class carrying one would shadow the
+ * Not companions on the style itself: a nested class carrying one would shadow the
  * `HighlightStyle.TwSe` preset, which is the name call sites actually reach for.
  */
-private fun twSeDefaultColor(darkTheme: Boolean): Color =
-    if (darkTheme) Color.White.copy(alpha = 0.5f) else Color.Black.copy(alpha = 0.5f)
+private val TwSeLitColor: Color = Color.White.copy(alpha = 0.85f)
 
-/**
- * The colour opposite this one, keeping its alpha and its colour space.
- *
- * Channel-wise rather than a hue rotation, because what this has to guarantee is that white becomes
- * black: the point of the inversion is contrast against the same background, not a different hue.
- */
-private fun Color.inverted(): Color =
-    Color(1f - red, 1f - green, 1f - blue, alpha, colorSpace)
+private val TwSeShadeColor: Color = Color.Black.copy(alpha = 0.30f)
