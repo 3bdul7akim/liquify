@@ -560,18 +560,28 @@ same pair on `InnerShadow`.
 | `Default(angle, falloff)` | Directional, lit from a fixed angle. |
 | `Ambient(intensity, angle, falloff)` | White on the lit side, dark opposite — reads as a bevel. |
 | `Dynamic(color, pointer, focus, falloff)` | Follows the pointer. `interaction.dynamicHighlight()` builds one for you. |
-| `TwSe(color, inverseColor, angle, falloff, innerWidth, outerWidth, ambient)` | A drawn edge: light hairline inside the outline, dark hairline outside it. |
+| `TwSe(color, inverseColor, angle, falloff, innerWidth, outerWidth, ambient, seamBlend)` | A drawn edge, divided across the border *and* around it. |
 
-`TwSe` is the one rim that draws **past** the element. A light band sits just inside the outline and
-a dark one just outside it, each fading to nothing as it leaves the border, and the two are divided
-at the border rather than blended across it. That is what a raised lip of glass does — the inner
-face catches the light, and the body drops a hairline of shadow onto whatever it is sitting on.
-Letting the two blend would collapse them into one soft line straddling the edge, which is the thing
-this style exists not to be.
+`TwSe` is the one rim that draws **past** the element, and it is divided twice over.
+
+**Across the border**: one band just inside the outline and one just outside it, each fading to
+nothing as it leaves the border, and neither crossing to the other side. Letting them blend would
+collapse the pair into one soft line straddling the edge, which is the thing this style exists not
+to be.
+
+**Around the border**: which of the two tones each band carries alternates by quadrant. On the
+leading diagonal the *inner* face is lit and the shadow falls outside; on the other diagonal that
+reverses — the *outer* edge catches the light and the inner face lies in shade. That is the same
+light seen from the other side of the lip, which is why the diagonals agree (top-left with
+bottom-right, top-right with bottom-left) and one light appears to cross a raised edge rather than
+four unrelated arcs meeting at the corners.
 
 `innerWidth` and `outerWidth` are how far each band reaches from the border, `1.dp` each by default.
 `ambient` is how much of the rim survives where the border faces away from the light — at `0f` it
-vanishes on two sides and reads as a broken outline rather than an edge.
+vanishes on two sides and reads as a broken outline rather than an edge. `seamBlend` is how far the
+swap between the two arrangements is spread, out from the midpoint of an edge; `Dp.Unspecified` —
+the default — scales it with the element so the sweep covers most of every edge whatever the size,
+and only the corners settle on a pure arrangement. `0.dp` gives a hard switch, which aliases.
 
 It is also the one rim that is **identical in a light UI and a dark one**. The others are
 reflections and have to know what they are reflecting off; this is a lit edge with its own shadow
@@ -591,8 +601,10 @@ A style that reaches outside the outline says so with `HighlightStyle.outsetWidt
 tells the rim node to centre the stroke on the border instead of clipping it away, and to record
 with that much slack around the element. Every other style leaves it at `0.dp`.
 
-Inside a `LiquidGlassGroup` it falls back to a plain directional rim in the lit tone: the merged
-surface's rim is drawn inside the merge program, which has one silhouette and no outside to draw on.
+Inside a `LiquidGlassGroup` the two *bands* survive — the merge program draws the same lit line
+inside the silhouette and shadow line outside it — but the quadrant swap does not. A merged body has
+no centre of its own to divide against, and the seams would fall across members and bridges wherever
+they landed, flipping a button's rim halfway along one of its edges.
 
 Shadows are punched out under the element, so they never darken the backdrop seen *through* the
 glass.

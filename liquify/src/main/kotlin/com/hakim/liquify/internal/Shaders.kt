@@ -344,9 +344,14 @@ half4 main(float2 coord) {
 }"""
 
 /**
- * A drawn edge rather than a reflection: a light hairline just *inside* the outline and a dark one
- * just *outside* it, each fading to nothing as it leaves the border, and divided from each other at
- * the border itself.
+ * A drawn edge rather than a reflection, divided twice over.
+ *
+ * **Across the border**: one band just inside the outline and one just outside it, each fading to
+ * nothing as it leaves the border, and neither crossing to the other side.
+ *
+ * **Around the border**: which of the two tones each band carries alternates by quadrant, so the
+ * lit face is the inner one on the leading diagonal and the outer one on the other. That is the
+ * same light seen from the other side of the lip, and it is why the two diagonals agree.
  *
  * This is the only rim in the library that draws past the element, which is why it is also the only
  * one the highlight node lets straddle the outline instead of clipping the stroke to it.
@@ -357,9 +362,9 @@ uniform float2 halfSize;
 // Folded on the CPU, as in the directional rim.
 uniform float halfMinSize;
 uniform float4 cornerRadii;
-// The lit tone, drawn inside the outline…
+// The two tones. Which side of the border each one sits on swaps from quadrant to quadrant — see
+// the diagonal factor below.
 layout(color) uniform half4 color;
-// …and the shadow tone, drawn outside it.
 layout(color) uniform half4 inverseColor;
 // Precomputed on the CPU, as in the directional rim.
 uniform float2 lightNormal;
@@ -369,6 +374,9 @@ uniform float innerWidth;
 uniform float outerWidth;
 // How much of the rim survives where the border faces away from the light.
 uniform float ambient;
+// Half-width of the crossfade between the two quadrant tones, per axis. Per axis because the sweep
+// it controls runs along an edge, and the two edges of a card are rarely the same length.
+uniform float2 seamBlend;
 
 $ROUNDED_RECT_SDF
 
@@ -383,12 +391,11 @@ half4 main(float2 coord) {
     // would alias into a stepped line along a curve, and this is exactly where the two tones meet.
     float inside = 1.0 - smoothstep(-0.5, 0.5, sd);
 
-    // Each band is at full strength against the outline and fades away from it, and neither is
-    // allowed across to the other side. That division is the whole effect: a real raised edge
-    // catches the light on its inner face and drops a hairline of shadow onto what it sits on, and
-    // letting the two blend would collapse them into one soft line straddling the border.
-    float lit = (1.0 - smoothstep(0.0, innerWidth, max(-sd, 0.0))) * inside;
-    float shade = (1.0 - smoothstep(0.0, outerWidth, max(sd, 0.0))) * (1.0 - inside);
+    // Two bands, one on each side of the border, each at full strength against it and fading away
+    // from it. Neither is allowed across to the other side: that division is what makes the pair
+    // read as a raised lip rather than as one soft line straddling the edge.
+    float innerBand = (1.0 - smoothstep(0.0, innerWidth, max(-sd, 0.0))) * inside;
+    float outerBand = (1.0 - smoothstep(0.0, outerWidth, max(sd, 0.0))) * (1.0 - inside);
 
     float gradRadius = min(radius * 1.5, halfMinSize);
     float2 grad = gradSdRoundedRect(centeredCoord, halfSize, gradRadius);
@@ -400,12 +407,34 @@ half4 main(float2 coord) {
     // edge and starts reading as a broken outline.
     float intensity = mix(directional, 1.0, ambient);
 
-    // Premultiplied on the way out, so each tone's own alpha is the strength of that band instead
-    // of being dropped between here and the layer. The two never overlap, so adding them is
-    // exactly compositing them.
-    half4 light = half4(color.rgb * color.a, color.a) * half(lit);
-    half4 dark = half4(inverseColor.rgb * inverseColor.a, inverseColor.a) * half(shade);
-    return (light + dark) * half(intensity);
+    // Which way round the two tones sit here: 1 on the leading diagonal, 0 on the other.
+    // smoothstep rather than step, because the switch falls at the midpoint of an edge — exactly
+    // where the rim is a single row of pixels, and a hard change would alias into a visible notch.
+    //
+    // The width of that crossfade is most of the look. Kept short it reads as four flat quadrants
+    // with a hairline seam; spread across most of the half-edge — which is what an unspecified
+    // seamBlend resolves to — it becomes one continuous sweep from the lit corner to the dark one,
+    // and only the corners themselves settle on a pure arrangement.
+    float sx = smoothstep(-seamBlend.x, seamBlend.x, centeredCoord.x);
+    float sy = smoothstep(-seamBlend.y, seamBlend.y, centeredCoord.y);
+    float onDiagonal = sx * sy + (1.0 - sx) * (1.0 - sy);
+
+    // Premultiplied, so each tone's own alpha is the strength of its band rather than something
+    // dropped between here and the layer.
+    half4 lit = half4(color.rgb * color.a, color.a);
+    half4 shade = half4(inverseColor.rgb * inverseColor.a, inverseColor.a);
+
+    // The swap, and it is not decoration — it is the same light seen from the other side. Where the
+    // border faces the light the inner face catches it and the body drops a hairline of shadow just
+    // outside; on the opposite quadrants that reverses, the *outer* edge catches the light and the
+    // inner face lies in shade. The diagonals therefore agree — top-left with bottom-right — so one
+    // light appears to cross a raised edge rather than four unrelated arcs meeting at the corners.
+    half onLeading = half(onDiagonal);
+    half4 innerTone = mix(shade, lit, onLeading);
+    half4 outerTone = mix(lit, shade, onLeading);
+
+    // The two bands never overlap, so adding them is exactly compositing them.
+    return (innerTone * half(innerBand) + outerTone * half(outerBand)) * half(intensity);
 }"""
 
 /**

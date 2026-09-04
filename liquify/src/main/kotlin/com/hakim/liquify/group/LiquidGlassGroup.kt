@@ -478,7 +478,10 @@ private class LiquidGlassGroupNode(
             glassUniformFingerprint(count, tinted, layerLeft, layerTop, highlight, density)
         if (fingerprint != glassUniforms) {
             glassUniforms = fingerprint
-            shader.writeMemberUniforms(active, count, density, tinted)
+            // How far this rim reaches past the silhouette, so the reject at the top of the program
+            // keeps the pixels its outer band is drawn on. Zero for every rim that lives inside.
+            val rimOutset = with(density) { highlight?.style?.outsetWidth?.toPx() ?: 0f }
+            shader.writeMemberUniforms(active, count, density, tinted, rimOutset)
             shader.writeSurfaceUniforms(layerLeft, layerTop, highlight, density)
             // The effect below copies the uniforms as they are now, so it is no longer the one
             // this frame needs.
@@ -575,30 +578,54 @@ private class LiquidGlassGroupNode(
         setFloatUniform("depthEffect", effectScope.depthEffect)
 
         if (highlight != null && highlight.width.value > 0f) {
-            // A style that flips with the theme resolves here too. The merged silhouette carries
-            // one rim colour — it has no quadrants of its own to alternate across, and inventing
-            // some would draw a seam through the very bridges merging exists to dissolve — so a
-            // two-toned style contributes its leading tone and reads as a plain directional rim.
+            // A style that resolves its colours against the theme resolves here too.
             val style = highlight.style.resolvedFor(darkTheme)
             setColorUniform("highlightColor", style.color.copy(alpha = 1f))
             setFloatUniform("highlightIntensity", style.color.alpha * highlight.alpha)
-            with(density) {
-                setFloatUniform(
-                    "highlightWidth",
-                    highlight.width.toPx() * 2f + highlight.blurRadius.toPx()
-                )
-            }
             // Resolved here rather than in the shader, where it cost a cos() and a sin() on every
             // pixel of the merged surface to arrive at the same vector.
             val angle = style.lightAngleRadians()
             setFloatUniform("highlightNormal", cos(angle), sin(angle))
             setFloatUniform("highlightFalloff", style.lightFalloff())
+
+            with(density) {
+                // A two-band rim carries the same edge onto the merged silhouette as it does onto
+                // a single pane: a lit line inside it and a shadow line outside. It used to
+                // contribute only its leading tone and read as a plain specular rim, which left a
+                // merged group as the one thing in an app that did not wear the app's own border.
+                //
+                // The bands are the style's own widths; every other rim keeps the doubled stroke
+                // width the single-element path clips in half.
+                if (style is HighlightStyle.TwSe) {
+                    setColorUniform("highlightShadeColor", style.inverseColor.copy(alpha = 1f))
+                    setFloatUniform(
+                        "highlightShadeIntensity",
+                        style.inverseColor.alpha * highlight.alpha
+                    )
+                    setFloatUniform("highlightWidth", style.innerWidth.toPx())
+                    setFloatUniform("highlightOuterWidth", style.outerWidth.toPx())
+                    setFloatUniform("highlightAmbient", style.ambient)
+                } else {
+                    setColorUniform("highlightShadeColor", Color.Black)
+                    setFloatUniform("highlightShadeIntensity", 0f)
+                    setFloatUniform(
+                        "highlightWidth",
+                        highlight.width.toPx() * 2f + highlight.blurRadius.toPx()
+                    )
+                    setFloatUniform("highlightOuterWidth", 0f)
+                    setFloatUniform("highlightAmbient", 0f)
+                }
+            }
         } else {
             setColorUniform("highlightColor", Color.White)
             setFloatUniform("highlightIntensity", 0f)
             setFloatUniform("highlightWidth", 0f)
             setFloatUniform("highlightNormal", 1f, 0f)
             setFloatUniform("highlightFalloff", 1f)
+            setColorUniform("highlightShadeColor", Color.Black)
+            setFloatUniform("highlightShadeIntensity", 0f)
+            setFloatUniform("highlightOuterWidth", 0f)
+            setFloatUniform("highlightAmbient", 0f)
         }
     }
 
@@ -620,7 +647,8 @@ private class LiquidGlassGroupNode(
         members: List<GlassMember>,
         count: Int,
         density: Density,
-        tinted: Boolean
+        tinted: Boolean,
+        rimOutset: Float
     ) {
         var boundsLeft = Float.POSITIVE_INFINITY
         var boundsTop = Float.POSITIVE_INFINITY
@@ -684,7 +712,11 @@ private class LiquidGlassGroupNode(
             }
         }
 
-        // How far outside the members the merged surface can possibly reach.
+        // How far outside the members anything this program draws can possibly reach.
+        //
+        // A rim with an outer band is drawn past the silhouette, so its reach has to be inside the
+        // box as well — the reject runs before the field is even evaluated and would otherwise
+        // discard the very pixels the band lives on.
         //
         // One smooth minimum dips a quarter of the blend radius below `min(a, b)`, but they are
         // chained, and each step can dip again — so a quarter is *not* the bound for a group of
@@ -693,7 +725,7 @@ private class LiquidGlassGroupNode(
         // untouched. So the field never goes deeper than one blend radius below the nearest
         // member's own distance, whatever the member count, and a pixel a full `k` outside every
         // member is certainly not covered. Two more pixels absorb the coverage ramp.
-        val margin = maxMergeRadius + 2f
+        val margin = maxMergeRadius + rimOutset + 2f
         setFloatUniform(
             "bounds",
             boundsLeft - margin,
@@ -755,7 +787,7 @@ private class LiquidGlassGroupNode(
             val silhouette = shaderCache.obtainRuntimeShader(mergeSilhouetteShaderKey(count)) {
                 mergeSilhouetteShader(count)
             }.apply {
-                writeMemberUniforms(active, count, density, tinted = false)
+                writeMemberUniforms(active, count, density, tinted = false, rimOutset = 0f)
                 setFloatUniform("aaInverse", 1f)
                 setColorUniform("color", shadowColor.copy(alpha = 1f))
                 setFloatUniform("colorAlpha", shadowColor.alpha)
@@ -766,7 +798,7 @@ private class LiquidGlassGroupNode(
             val cutout = shaderCache.obtainRuntimeShader(mergeSilhouetteMaskShaderKey(count)) {
                 mergeSilhouetteShader(count)
             }.apply {
-                writeMemberUniforms(active, count, density, tinted = false)
+                writeMemberUniforms(active, count, density, tinted = false, rimOutset = 0f)
                 setFloatUniform("aaInverse", 1f)
                 setColorUniform("color", Color.White)
                 setFloatUniform("colorAlpha", 1f)

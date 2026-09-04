@@ -18,6 +18,7 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.takeOrElse
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.isSpecified
 import androidx.compose.ui.util.fastCoerceAtLeast
 import com.hakim.liquify.RuntimeShader
 import com.hakim.liquify.RuntimeShaderCache
@@ -156,13 +157,19 @@ public interface HighlightStyle {
     }
 
     /**
-     * A drawn edge rather than a reflection: a light hairline just **inside** the outline and a
-     * dark one just **outside** it, each fading to nothing as it leaves the border.
+     * A drawn edge rather than a reflection, divided twice over.
      *
-     * This is what a raised lip of glass actually does — the inner face catches the light, and the
-     * body drops a hairline of shadow onto whatever it is sitting on. The two bands are divided at
-     * the border and never blend into one another; letting them would collapse the pair into a
-     * single soft line straddling the edge, which is the thing this style exists not to be.
+     * **Across the border.** One band just *inside* the outline and one just *outside* it, each
+     * fading to nothing as it leaves the border, and neither crossing to the other side. Letting
+     * them blend would collapse the pair into a single soft line straddling the edge, which is the
+     * thing this style exists not to be.
+     *
+     * **Around the border.** Which of the two tones each band carries alternates by quadrant: on
+     * the leading diagonal the *inner* face is lit and the shadow falls outside, and on the other
+     * diagonal that reverses — the *outer* edge catches the light and the inner face lies in shade.
+     * That is not decoration but the same light seen from the other side of the lip, which is why
+     * the diagonals agree: top-left with bottom-right, top-right with bottom-left, so one light
+     * appears to cross a raised edge rather than four unrelated arcs meeting at the corners.
      *
      * It is the only rim in the library that draws **past** the element. The highlight node reads
      * [outsetWidth] and, seeing it non-zero, centres the stroke on the outline instead of clipping
@@ -180,16 +187,23 @@ public interface HighlightStyle {
      * plain directional rim in the lit tone. The merged surface's rim is rendered inside the merge
      * program, which has one silhouette and no outside to draw on.
      *
-     * @param color the lit band, inside the outline. [Color.Unspecified] — the default — is a
-     *   fixed white; its alpha is the strength of that band.
-     * @param inverseColor the shadow band, outside it. Unspecified is a fixed black.
-     * @param angle direction of the light in degrees, as in [Default].
+     * @param color the lit tone. [Color.Unspecified] — the default — is a fixed white; its alpha is
+     *   the strength of whichever band is carrying it.
+     * @param inverseColor the shadow tone. Unspecified is a fixed black.
+     * @param angle direction of the light in degrees, as in [Default]. It also decides which
+     *   diagonal is the lit one, so the brightest quadrants and the lit-inside quadrants agree.
      * @param falloff how sharply the rim fades away from that direction. Higher is tighter.
-     * @param innerWidth how far the lit band reaches inside the outline before it is fully
+     * @param innerWidth how far the inner band reaches inside the outline before it is fully
      *   transparent.
-     * @param outerWidth how far the shadow band reaches outside it.
+     * @param outerWidth how far the outer band reaches outside it.
      * @param ambient how much of the rim survives where the border faces away from the light. `0f`
      *   lets it vanish on two sides, which reads as a broken outline rather than as an edge.
+     * @param seamBlend how far the swap from one arrangement to the other is spread, measured out
+     *   from the midpoint of an edge in each direction. [Dp.Unspecified] — the default — scales it
+     *   with the element so the sweep covers most of every edge whatever the size, which is what
+     *   makes it read as one gradient rather than as four flat quadrants meeting at a seam. An
+     *   explicit distance is absolute and applies to both axes; `0.dp` gives a hard switch, which
+     *   aliases.
      */
     @Immutable
     public data class TwSe(
@@ -200,7 +214,8 @@ public interface HighlightStyle {
         @param:FloatRange(from = 0.0) val falloff: Float = 1f,
         val innerWidth: Dp = 1f.dp,
         val outerWidth: Dp = 1f.dp,
-        @param:FloatRange(from = 0.0, to = 1.0) val ambient: Float = 0.35f
+        @param:FloatRange(from = 0.0, to = 1.0) val ambient: Float = 0.35f,
+        val seamBlend: Dp = Dp.Unspecified
     ) : HighlightStyle {
 
         /**
@@ -235,6 +250,21 @@ public interface HighlightStyle {
             // reached the program directly, and costs nothing once the colours are settled.
             val resolved = resolvedFor(darkTheme = true)
 
+            // A fixed distance cannot describe the quadrant crossfade: it runs *along* an edge, so
+            // the same 4.dp that sweeps a whole toggle is a hairline on a card. Left unspecified it
+            // is taken as a share of each half-edge instead, and the sweep looks the same at any
+            // size. The shader interpolates across ±this, so neither axis may be zero wide.
+            val blendX: Float
+            val blendY: Float
+            if (seamBlend.isSpecified) {
+                val absolute = seamBlend.toPx().fastCoerceAtLeast(MinSeamBlend)
+                blendX = absolute
+                blendY = absolute
+            } else {
+                blendX = (size.width * 0.5f * RelativeSeamBlend).fastCoerceAtLeast(MinSeamBlend)
+                blendY = (size.height * 0.5f * RelativeSeamBlend).fastCoerceAtLeast(MinSeamBlend)
+            }
+
             return runtimeShaderCache
                 .obtainRuntimeShader("liquify.highlight.twSe", HIGHLIGHT_TWSE_SHADER)
                 .apply {
@@ -255,6 +285,7 @@ public interface HighlightStyle {
                         outerWidth.toPx().fastCoerceAtLeast(MinBandWidth)
                     )
                     setFloatUniform("ambient", ambient)
+                    setFloatUniform("seamBlend", blendX, blendY)
                 }
         }
     }
@@ -322,6 +353,19 @@ private fun Float.toRadians(): Float = (this * (PI / 180.0)).toFloat()
 
 /** Floor on a band's width. `smoothstep` needs the two edges of its range to differ. */
 private const val MinBandWidth = 0.5f
+
+/**
+ * How much of each half-edge an unspecified [HighlightStyle.TwSe.seamBlend] sweeps across.
+ *
+ * At `0.85` the crossfade runs from one corner almost to the next, and only the corners themselves
+ * settle on a pure arrangement — which is where they belong, because a 45° rim is at its brightest
+ * on the leading diagonal and dimmest on the other one. Lower it and the quadrants flatten out with
+ * a seam between them; raise it past 1 and the pure corners never appear at all.
+ */
+private const val RelativeSeamBlend = 0.85f
+
+/** Floor on the crossfade width. `smoothstep` needs the two edges of its range to differ. */
+private const val MinSeamBlend = 0.0001f
 
 /**
  * The tones [HighlightStyle.TwSe] resolves unspecified colours to.

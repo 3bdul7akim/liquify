@@ -37,8 +37,8 @@ import androidx.compose.ui.util.lerp
  */
 @Immutable
 public data class Shadow(
-    val radius: Dp = 18f.dp,
-    val offset: DpOffset = DpOffset(0f.dp, radius / 5f),
+    val radius: Dp = 7.5f.dp,
+    val offset: DpOffset = DpOffset(0f.dp, radius / 1.5f),
     val color: Color = Color.Unspecified,
     @param:FloatRange(from = 0.0, to = 1.0) val alpha: Float = 1f,
     val blendMode: BlendMode = DrawScope.DefaultBlendMode
@@ -66,7 +66,7 @@ public data class Shadow(
          * fainter than a rim would be, so it reads as spill and not as a second border.
          */
         @Stable
-        public val DarkThemeColor: Color = Color.White.copy(alpha = 0.07f)
+        public val DarkThemeColor: Color = Color.White.copy(alpha = 0.12f)
 
         /** [LightThemeColor] or [DarkThemeColor], for a [color] that was left unspecified. */
         @Stable

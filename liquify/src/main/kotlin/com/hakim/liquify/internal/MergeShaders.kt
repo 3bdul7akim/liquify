@@ -284,6 +284,14 @@ uniform float highlightWidth;
 // pixel of the merged surface, on every frame, for a vector that is the same across the draw.
 uniform float2 highlightNormal;
 uniform float highlightFalloff;
+// The second half of a two-band rim: a shadow tone drawn *outside* the silhouette, fading away
+// from it. Zero width means the style has no outer band, and the rim is the single additive
+// specular line every other style asks for.
+layout(color) uniform half4 highlightShadeColor;
+uniform float highlightShadeIntensity;
+uniform float highlightOuterWidth;
+// How much of the rim survives where the border faces away from the light.
+uniform float highlightAmbient;
 
 ${mergePrelude(count, tinted)}
 
@@ -303,13 +311,16 @@ ${fieldSetup(count, tinted)}
     float sd = field.x;
 
     float mask = clamp(0.5 - sd * aaInverse, 0.0, 1.0);
-    if (mask <= 0.0) {
+    // A rim with an outer band draws *past* the silhouette, so those pixels have to survive the
+    // coverage test — they carry no glass at all, only the line. Everything further out still
+    // leaves here, which is the great majority of what the halo-sized layer holds.
+    if (mask <= 0.0 && sd >= highlightOuterWidth) {
         return half4(0.0);
     }
 
     // Interior pixels far from any edge need neither the gradient nor its four extra field
     // evaluations, which is where most of the saving on a large merged surface comes from.
-    float band = max(refractionHeight, highlightWidth);
+    float band = max(refractionHeight, max(highlightWidth, highlightOuterWidth));
     float2 grad = float2(0.0, 0.0);
     float confidence = 0.0;
     if (abs(sd) < band) {
@@ -327,7 +338,9 @@ ${fieldSetup(count, tinted)}
     }
 
     float2 sampleCoord = coord;
-    if (refractionHeight > 0.0 && -sd < refractionHeight && confidence > 0.0) {
+    // `mask > 0` because the outer rim band brings pixels this far that carry no glass: bending a
+    // backdrop that is about to be multiplied by zero coverage is a fetch spent on nothing.
+    if (mask > 0.0 && refractionHeight > 0.0 && -sd < refractionHeight && confidence > 0.0) {
         float2 bendDirection = grad;
         if (depthEffect > 0.0) {
             // Dome about the *nearest member's* centre, not the group's. Using the group centre
@@ -348,16 +361,40 @@ ${fieldSetup(count, tinted)}
     half4 color = content.eval(sampleCoord) * half(mask);
 $applyTint
     if (highlightWidth > 0.0 && highlightIntensity > 0.0) {
-        float rim = 1.0 - smoothstep(0.0, highlightWidth, abs(sd));
         // A falloff of 1 makes pow() the identity, and 0 makes it a uniform hairline — both are
         // uniforms, so the branch is coherent and the common cases skip the call entirely.
         float aligned = abs(dot(grad, highlightNormal));
         float facing = highlightFalloff == 1.0 ? aligned : pow(aligned, highlightFalloff);
-        // Same confidence gate: the rim follows the surface normal, so where the normal is noise
-        // the rim would otherwise streak a bright seam across the neck.
-        half intensity = half(rim * facing * mask * highlightIntensity * confidence);
-        color.rgb += highlightColor.rgb * intensity;
-        color.a = min(color.a + intensity, half(1.0));
+        // Same confidence gate throughout: the rim follows the surface normal, so where the normal
+        // is noise the rim would otherwise streak a bright seam across the neck of a bridge.
+        float directional = mix(facing, 1.0, highlightAmbient) * confidence;
+
+        if (highlightOuterWidth > 0.0) {
+            // Two bands, split at the silhouette and each fading away from it — the same drawn
+            // edge a single pane wears, so a merged body is not the one thing in the app with a
+            // different border. `highlightOuterWidth` is a uniform, so this branch is coherent.
+            float inside = 1.0 - smoothstep(-0.5, 0.5, sd);
+            float lit =
+                (1.0 - smoothstep(0.0, highlightWidth, max(-sd, 0.0))) * inside;
+            float shade =
+                (1.0 - smoothstep(0.0, highlightOuterWidth, max(sd, 0.0))) * (1.0 - inside);
+
+            // Premultiplied, and composited source-over rather than added: half of this rim
+            // *darkens*, and adding cannot subtract light. The two bands never overlap, so summing
+            // them is exactly compositing them against each other.
+            half litAlpha = half(lit * directional * highlightIntensity);
+            half shadeAlpha = half(shade * directional * highlightShadeIntensity);
+            half4 rim = half4(
+                highlightColor.rgb * litAlpha + highlightShadeColor.rgb * shadeAlpha,
+                litAlpha + shadeAlpha
+            );
+            color = rim + color * (half(1.0) - rim.a);
+        } else {
+            float rim = 1.0 - smoothstep(0.0, highlightWidth, abs(sd));
+            half intensity = half(rim * directional * mask * highlightIntensity);
+            color.rgb += highlightColor.rgb * intensity;
+            color.a = min(color.a + intensity, half(1.0));
+        }
     }
 
     return color;

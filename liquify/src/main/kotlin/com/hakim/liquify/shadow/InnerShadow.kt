@@ -46,7 +46,7 @@ public data class InnerShadow(
 
         /** The ink an unspecified [color] resolves to over a light UI. */
         @Stable
-        public val LightThemeColor: Color = Color.Black.copy(alpha = 0.2f)
+        public val LightThemeColor: Color = Color.Black.copy(alpha = 0.25f)
 
         /**
          * And over a dark one.
@@ -57,7 +57,7 @@ public data class InnerShadow(
          * over refracted backdrop rather than over the page.
          */
         @Stable
-        public val DarkThemeColor: Color = Color.White.copy(alpha = 0.2f)
+        public val DarkThemeColor: Color = Color.White.copy(alpha = 0.325f)
 
         /** [LightThemeColor] or [DarkThemeColor], for a [color] that was left unspecified. */
         @Stable
