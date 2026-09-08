@@ -104,7 +104,20 @@ public data class GlassMaterial(
             saturation = 1.6f,
             tint = Color.White.copy(0.01f),
             opacity = 1f,
-            highlight = Highlight.TwSe
+            highlight = Highlight.Default
+        )
+
+        /** The everyday material, but the difference is at the rim lights (maybe matching iOS 27) */
+        @Stable
+        public val TwSe: GlassMaterial = GlassMaterial(
+            blurRadius = 6.dp,
+            refractionHeight = 24.dp,
+            refractionAmount = 24.dp,
+            saturation = 1.15f,
+            tint = Color.Unspecified,
+            opacity = 1f,
+            highlight = Highlight.TwSe,
+            shadow = Shadow.Default
         )
     }
 }

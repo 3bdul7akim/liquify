@@ -50,6 +50,11 @@ private val Materials = listOf(
         "Thick",
         GlassMaterial.Thick,
         "Heavily frosted and opaque, for large surfaces such as sheets and sidebars."
+    ),
+    Triple(
+        "Twenty Seven",
+        GlassMaterial.TwSe,
+        "The everyday material, but the difference is at the rim lights (maybe matching iOS 27)"
     )
 )
 
