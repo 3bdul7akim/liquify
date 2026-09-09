@@ -413,6 +413,7 @@ public fun Modifier.liquify(
     // Read once here and handed to the two shadow nodes, which are not composables and cannot look
     // it up themselves. A theme switch recomposes this call, and the nodes re-record in the new ink.
     val darkTheme = isGlassDarkTheme()
+    val glassEnabled = LocalGlassEnabled.current
     val effectiveLayerBlock: (GraphicsLayerScope.() -> Unit)? =
         if (touch != null && dragging) {
             {
@@ -446,19 +447,28 @@ public fun Modifier.liquify(
             }
         )
         .then(
-            LiquifyElement(
-                backdrop = resolvedBackdrop,
-                shapeProvider = shapeProvider,
-                effects = effects,
-                nodeState = nodeState,
-                layerBlock = effectiveLayerBlock,
-                exportedBackdrop = exportedBackdrop,
-                onDrawBehind = onDrawBehind,
-                onDrawBackdrop = onDrawBackdrop,
-                onDrawSurface = onDrawSurface,
-                onDrawFront = onDrawFront,
-                interaction = touch
-            )
+            // The whole material, or none of it — see [LocalGlassEnabled]. The branch sits here,
+            // after every composable call above it, so switching appearance never skips a
+            // `remember` and reshuffles the slot table. And it is deliberately only the *sampling*
+            // node that is swapped: the rim, both shadows, the layer transform and the gestures
+            // stay exactly where this call site put them.
+            if (glassEnabled) {
+                LiquifyElement(
+                    backdrop = resolvedBackdrop,
+                    shapeProvider = shapeProvider,
+                    effects = effects,
+                    nodeState = nodeState,
+                    layerBlock = effectiveLayerBlock,
+                    exportedBackdrop = exportedBackdrop,
+                    onDrawBehind = onDrawBehind,
+                    onDrawBackdrop = onDrawBackdrop,
+                    onDrawSurface = onDrawSurface,
+                    onDrawFront = onDrawFront,
+                    interaction = touch
+                )
+            } else {
+                Modifier.flatSurface(shapeProvider, onDrawBehind, onDrawSurface, onDrawFront)
+            }
         )
         // After the backdrop node, so the glow lands on the glass and inside its clip.
         .then(

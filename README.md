@@ -240,6 +240,42 @@ Only reach for `rememberGlassEffects(material)` when you need to hand a group an
 material cannot express. It returns a stable instance, which matters because a freshly allocated
 lambda would make the group rebuild its effect chain every recomposition.
 
+### Turning the glass off: `LocalGlassEnabled`
+
+> Newer than the published artifact — on `main`, not yet in `1.1.0`.
+
+Apps that offer a low-power appearance need glass that can stop being glass. Set this to `false` and
+every `liquify` below it becomes a plain filled shape: **no layer is recorded, no effect chain is
+built, no shader is compiled, and the backdrop is never sampled.**
+
+```kotlin
+CompositionLocalProvider(LocalGlassEnabled provides (appearance != Appearance.Flat)) {
+    App()
+}
+```
+
+What survives is everything that is not the material: the outline, the draw hooks, the layer
+transform, the gestures, and any rim or shadow the call site asked for. Pass `null` for those at the
+call site if a flat surface should be bare.
+
+**The alternative it replaces.** Without it, every component ends up writing
+
+```kotlin
+val skin = if (fancy) Modifier.liquify(shape, backdrop, effects, …)
+           else Modifier.background(color, shape)
+```
+
+which spells the shape out twice, has to be repeated for each new component, and will eventually
+disagree with itself in one branch. One provider at the root replaces all of them.
+
+**What the call site still owns: colour.** The library cannot guess it. Glass fills are usually
+translucent because the blur behind them is doing half the work; with nothing behind them the same
+fill leaves the page showing through. So a call site that supports both should still pick a denser
+colour when this is off — but that is a colour, not a second modifier chain.
+
+`staticCompositionLocalOf`, because it changes when someone picks a different appearance and at no
+other time: reads cost nothing, and the one change it does make has to reach every pane anyway.
+
 ---
 
 ## Effects
@@ -680,6 +716,11 @@ unstretched copy of it.
 
 - One glass element is one offscreen layer plus one render-effect chain. Individually cheap, and
   they add up. Prefer one large pane over many small ones.
+- **The cheapest glass is none.** `LocalGlassEnabled provides false` takes the layer, the chain and
+  the backdrop sample out of every `liquify` below it in one line — worth wiring up before tuning
+  radii, if the app has any notion of a low-power appearance. Remember that the *backdrop source*
+  goes too: a `layerBackdrop` nothing samples any more is still a full-screen layer being re-recorded
+  every frame, so drop that modifier as well.
 - A **static backdrop is the single biggest win.** An animating one forces every glass element on
   screen to re-blur and re-refract every frame even when nothing is being touched.
 - `chromaticAberration` costs seven backdrop samples per pixel instead of one. Use it on small
@@ -711,9 +752,10 @@ Used shapes come from **[Kyant0/Shapes][shapes]**, consumed as a Maven artifact 
 See [`NOTICE`](NOTICE) for the formal attribution.
 
 What Liquify adds on top: the merged distance-field pass and the whole group renderer, per-member
-colour blended through that same field, gradient
-blur, the material presets and app-wide material theming, the one-line interaction flags, 
-the consolidation of `drawBackdrop` and `liquify` into a single modifier.
+colour blended through that same field, gradient blur, the material presets and app-wide material
+theming, the one-line interaction flags, the consolidation of `drawBackdrop` and `liquify` into a
+single modifier, and `LocalGlassEnabled` — a one-line way for an app to switch the whole material
+off without rewriting a call site.
 
 ---
 
