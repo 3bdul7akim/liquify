@@ -716,6 +716,11 @@ unstretched copy of it.
 
 - One glass element is one offscreen layer plus one render-effect chain. Individually cheap, and
   they add up. Prefer one large pane over many small ones.
+- **Shader programs are pooled process-wide.** An element that leaves the composition hands its
+  compiled AGSL programs back, and the next element that needs the same program takes one instead
+  of compiling it — so a panel full of glass controls opening a second time, or a header swapped on
+  a tab change, pays no parse in the frame it appears. The touch glow compiles nothing until the
+  first press.
 - **The cheapest glass is none.** `LocalGlassEnabled provides false` takes the layer, the chain and
   the backdrop sample out of every `liquify` below it in one line — worth wiring up before tuning
   radii, if the app has any notion of a low-power appearance. Remember that the *backdrop source*

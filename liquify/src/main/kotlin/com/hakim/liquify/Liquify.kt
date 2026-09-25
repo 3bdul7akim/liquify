@@ -73,8 +73,9 @@ private fun <T> rememberValueProvider(value: T?): (() -> T?)? =
  * }
  * ```
  *
- * The element's own children draw on top of the glass, unclipped by it, so this is a *background*
- * treatment — put it on the container and lay out icons and text inside as usual.
+ * The element's own children draw on top of the glass and are clipped to its outline, so this is a
+ * *background* treatment — put it on the container and lay out icons and text inside as usual, and
+ * keep anything that has to overhang the pane (a badge, a swelling thumb) outside the element.
  *
  * Everything degrades on its own: below API 33 the refraction is skipped, below API 31 the blur and
  * colour effects are too, and the element still renders with its rim, shadow and shape.
@@ -414,15 +415,22 @@ public fun Modifier.liquify(
     // it up themselves. A theme switch recomposes this call, and the nodes re-record in the new ink.
     val darkTheme = isGlassDarkTheme()
     val glassEnabled = LocalGlassEnabled.current
-    val effectiveLayerBlock: (GraphicsLayerScope.() -> Unit)? =
+    // Remembered for the same reason as the providers above: it is compared by identity both by
+    // the graphics layer and by the backdrop node, so a fresh block on every recomposition of a
+    // draggable element re-uploaded its layer properties and invalidated its draw for nothing.
+    val dragLayerBlock: (GraphicsLayerScope.() -> Unit)? =
         if (touch != null && dragging) {
-            {
-                with(touch) { applyDragTransform() }
-                layerBlock?.invoke(this)
+            remember(touch, layerBlock) {
+                val block: GraphicsLayerScope.() -> Unit = {
+                    with(touch) { applyDragTransform() }
+                    layerBlock?.invoke(this)
+                }
+                block
             }
         } else {
-            layerBlock
+            null
         }
+    val effectiveLayerBlock: (GraphicsLayerScope.() -> Unit)? = dragLayerBlock ?: layerBlock
     return this
         .then(if (effectiveLayerBlock != null) Modifier.graphicsLayer(effectiveLayerBlock) else Modifier)
         .then(

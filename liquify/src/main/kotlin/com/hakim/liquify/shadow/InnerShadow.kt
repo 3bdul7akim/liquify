@@ -57,7 +57,7 @@ public data class InnerShadow(
          * over refracted backdrop rather than over the page.
          */
         @Stable
-        public val DarkThemeColor: Color = Color.White.copy(alpha = 0.325f)
+        public val DarkThemeColor: Color = Color.White.copy(alpha = 0.1f)
 
         /** [LightThemeColor] or [DarkThemeColor], for a [color] that was left unspecified. */
         @Stable

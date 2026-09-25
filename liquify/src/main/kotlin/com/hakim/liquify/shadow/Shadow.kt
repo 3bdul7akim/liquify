@@ -66,7 +66,7 @@ public data class Shadow(
          * fainter than a rim would be, so it reads as spill and not as a second border.
          */
         @Stable
-        public val DarkThemeColor: Color = Color.White.copy(alpha = 0.12f)
+        public val DarkThemeColor: Color = Color.White.copy(alpha = 0.02f)
 
         /** [LightThemeColor] or [DarkThemeColor], for a [color] that was left unspecified. */
         @Stable

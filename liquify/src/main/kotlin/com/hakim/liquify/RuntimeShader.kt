@@ -24,6 +24,15 @@ import org.intellij.lang.annotations.Language
 @RequiresApi(Build.VERSION_CODES.TIRAMISU)
 public class RuntimeShader(@Language("AGSL") shaderString: String) {
 
+    /**
+     * The program this instance was compiled from.
+     *
+     * Kept so the process-wide pool can prove a recycled instance really is the program a caller
+     * asked for: cache keys are the caller's promise, and a pool shared by every element in the
+     * app is exactly where two callers who picked the same key for different programs would meet.
+     */
+    internal val source: String = shaderString
+
     internal val platformShader: android.graphics.RuntimeShader =
         android.graphics.RuntimeShader(shaderString)
 

@@ -10,6 +10,7 @@ import androidx.compose.animation.core.VectorConverter
 import androidx.compose.animation.core.VisibilityThreshold
 import androidx.compose.animation.core.spring
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.RememberObserver
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -29,6 +30,7 @@ import androidx.compose.ui.util.fastCoerceAtMost
 import androidx.compose.ui.util.fastCoerceIn
 import androidx.compose.ui.util.lerp
 import com.hakim.liquify.RuntimeShader
+import com.hakim.liquify.RuntimeShaderPool
 import com.hakim.liquify.asComposeShader
 import com.hakim.liquify.highlight.Highlight
 import com.hakim.liquify.highlight.HighlightStyle
@@ -65,6 +67,9 @@ half4 main(float2 coord) {
  * exactly as it was and lets big surfaces swell in proportion to themselves.
  */
 private const val MinimumRelativeStretch = 0.06f
+
+/** Pool key of the hotspot program — see [RuntimeShaderPool]. */
+private const val IlluminationShaderKey = "liquify.illumination"
 
 /**
  * Tracks touch on a glass element and exposes everything needed to make it react like liquid.
@@ -119,7 +124,7 @@ public class InteractiveHighlight(
      * taking over correctly ends the press.
      */
     private val tracksConsumedDrags: Boolean = false
-) {
+) : RememberObserver {
 
     private val pressProgressAnimationSpec = spring(0.5f, 300f, 0.001f)
     private val positionAnimationSpec = spring(0.5f, 300f, Offset.VisibilityThreshold)
@@ -134,8 +139,50 @@ public class InteractiveHighlight(
     // into an invalidation loop.
     private var elementSize: Size = Size.Zero
 
-    private val shader: RuntimeShader? =
-        if (isRuntimeShaderSupported()) RuntimeShader(ILLUMINATION_SHADER) else null
+    /**
+     * The hotspot program, taken on the first press rather than at construction.
+     *
+     * Every button, tab bar and dropdown trigger builds one of these objects, and almost none of
+     * them is ever touched in a given session — but compiling the program eagerly put an AGSL parse
+     * into the frame each of them first appeared in. Taken from [RuntimeShaderPool] when the glow
+     * first has something to draw, and handed back when this object leaves the composition, so an
+     * editor panel opening and closing trades the same few instances back and forth instead of
+     * compiling a fresh one per control per open.
+     */
+    private var shader: RuntimeShader? = null
+
+    private fun obtainShader(): RuntimeShader? {
+        if (!isRuntimeShaderSupported()) return null
+        shader?.let { return it }
+        val obtained = RuntimeShaderPool.acquire(IlluminationShaderKey, ILLUMINATION_SHADER)
+            ?: RuntimeShader(ILLUMINATION_SHADER)
+        // A recycled instance holds whatever its last owner wrote, and a fresh one holds nothing,
+        // so neither matches what these say was uploaded.
+        uploadedGlowColor = Color.Unspecified
+        uploadedGlowRadius = Float.NaN
+        uploadedGlowX = Float.NaN
+        uploadedGlowY = Float.NaN
+        glowBrush = null
+        shader = obtained
+        return obtained
+    }
+
+    private fun releaseShader() {
+        val owned = shader ?: return
+        shader = null
+        glowBrush = null
+        if (isRuntimeShaderSupported()) RuntimeShaderPool.release(IlluminationShaderKey, owned)
+    }
+
+    override fun onRemembered() {}
+
+    override fun onForgotten() {
+        releaseShader()
+    }
+
+    override fun onAbandoned() {
+        releaseShader()
+    }
 
     /**
      * The brush the hotspot is painted with, built on first use and then kept.
@@ -267,7 +314,7 @@ public class InteractiveHighlight(
         val progress = pressProgressAnimation.value
 
         if (progress > 0f) {
-            val shader = shader
+            val shader = obtainShader()
             // The SDK check is redundant with the null check — the shader is only built when
             // supported — but it is the form lint can actually verify.
             if (shader != null && isRuntimeShaderSupported()) {
