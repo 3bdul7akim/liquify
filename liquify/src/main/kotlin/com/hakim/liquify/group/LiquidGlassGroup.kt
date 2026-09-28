@@ -481,8 +481,8 @@ private class LiquidGlassGroupNode(
             // How far this rim reaches past the silhouette, so the reject at the top of the program
             // keeps the pixels its outer band is drawn on. Zero for every rim that lives inside.
             val rimOutset = with(density) { highlight?.style?.outsetWidth?.toPx() ?: 0f }
-            shader.writeMemberUniforms(active, count, density, tinted, rimOutset)
-            shader.writeSurfaceUniforms(layerLeft, layerTop, highlight, density)
+            val widestBand = shader.writeMemberUniforms(active, count, density, tinted, rimOutset)
+            shader.writeSurfaceUniforms(layerLeft, layerTop, widestBand, highlight, density)
             // The effect below copies the uniforms as they are now, so it is no longer the one
             // this frame needs.
             chainChanged = true
@@ -524,6 +524,9 @@ private class LiquidGlassGroupNode(
         var hash = count * 31L + if (tinted) 7L else 3L
         hash = hash * 31L + layerLeft.toRawBits()
         hash = hash * 31L + layerTop.toRawBits()
+        // The lens as recorded: a fixed pair, or the two scales of a refraction by size — whose
+        // per-member results follow from the member geometry hashed below.
+        hash = hash * 31L + if (effectScope.refractionBySize) 1L else 0L
         hash = hash * 31L + effectScope.refractionHeight.toRawBits()
         hash = hash * 31L + effectScope.refractionAmount.toRawBits()
         hash = hash * 31L + effectScope.depthEffect.toRawBits()
@@ -555,26 +558,23 @@ private class LiquidGlassGroupNode(
     /**
      * Uploads the merged surface's own parameters: where the layer sits, the lens, and the rim.
      *
+     * The lens itself is per member — see [writeMemberUniforms] — so all that is left here is the
+     * [widestBand] of any of them, which bounds where the program bothers taking a gradient.
+     *
      * Only reachable past the [isRuntimeShaderSupported] guard at the top of [draw].
      */
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private fun RuntimeShader.writeSurfaceUniforms(
         layerLeft: Float,
         layerTop: Float,
+        widestBand: Float,
         highlight: Highlight?,
         density: Density
     ) {
         setFloatUniform("offset", layerLeft, layerTop)
         setFloatUniform("aaInverse", 1f)
 
-        val refractionHeight = effectScope.refractionHeight
-        setFloatUniform("refractionHeight", refractionHeight)
-        setFloatUniform(
-            "refractionHeightInverse",
-            if (refractionHeight > 0f) 1f / refractionHeight else 0f
-        )
-        // Negative so the backdrop is pulled inwards, matching the single-element lens.
-        setFloatUniform("refractionAmount", -effectScope.refractionAmount)
+        setFloatUniform("refractionHeight", widestBand)
         setFloatUniform("depthEffect", effectScope.depthEffect)
 
         if (highlight != null && highlight.width.value > 0f) {
@@ -640,7 +640,14 @@ private class LiquidGlassGroupNode(
      * this is where the stretch scale is applied and the shader has to reject against the geometry
      * it will actually evaluate.
      *
+     * Each member's refraction goes along with it: the recorded fixed pair for every member, or —
+     * under `lensBySize()` — the pair the member's own size gives. Measured on its laid-out size,
+     * not the stretched one, exactly as a single pane measures its layout size: a press should not
+     * turn up the lens.
+     *
      * Only reachable past the [isRuntimeShaderSupported] guard at the top of [draw].
+     *
+     * @return the widest refracting band of any member, in pixels.
      */
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private fun RuntimeShader.writeMemberUniforms(
@@ -649,12 +656,13 @@ private class LiquidGlassGroupNode(
         density: Density,
         tinted: Boolean,
         rimOutset: Float
-    ) {
+    ): Float {
         var boundsLeft = Float.POSITIVE_INFINITY
         var boundsTop = Float.POSITIVE_INFINITY
         var boundsRight = Float.NEGATIVE_INFINITY
         var boundsBottom = Float.NEGATIVE_INFINITY
         var maxMergeRadius = 0f
+        var widestBand = 0f
 
         for (i in 0 until count) {
             val member = members[i]
@@ -697,11 +705,17 @@ private class LiquidGlassGroupNode(
                 radii[2] * radiusScale,
                 radii[3] * radiusScale
             )
-            // param.y carries the tint strength; the silhouette program has no colour uniforms at
-            // all, so it is only ever written — never read — there.
+            // param.y carries the tint strength and param.zw the refraction; the silhouette program
+            // reads neither, so there they are only ever written.
             val memberTint = member.tint
             val tintAmount = if (memberTint.isSpecified) memberTint.alpha else 0f
-            setFloatUniform(UniformParam[i], member.mergeRadius, tintAmount, 0f, 0f)
+            val memberWidth = member.halfWidth * 2f
+            val memberHeight = member.halfHeight * 2f
+            val band = effectScope.memberRefractionHeight(memberWidth, memberHeight)
+            // Negative so the backdrop is pulled inwards, matching the single-element lens.
+            val displacement = -effectScope.memberRefractionAmount(memberWidth, memberHeight)
+            widestBand = maxOf(widestBand, band)
+            setFloatUniform(UniformParam[i], member.mergeRadius, tintAmount, band, displacement)
             if (tinted) {
                 // Opaque: the strength travels in param.y, and a layout(color) uniform would
                 // otherwise have its alpha applied twice.
@@ -733,6 +747,7 @@ private class LiquidGlassGroupNode(
             boundsRight + margin,
             boundsBottom + margin
         )
+        return widestBand
     }
 
     /**

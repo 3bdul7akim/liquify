@@ -65,7 +65,8 @@ private val silhouetteSources = HashMap<Int, String>(4)
  * Per member:
  * - `rectN`  — `xy` centre, `zw` half size, in group content space
  * - `radiiN` — corner radii, top-left, top-right, bottom-right, bottom-left
- * - `paramN` — `x` smoothing radius `k` in pixels, `y` tint strength, `zw` reserved
+ * - `paramN` — `x` smoothing radius `k` in pixels, `y` tint strength, `z` refraction band and
+ *   `w` refraction displacement in pixels — the member's own, so each one refracts by its size
  * - `tintN`  — the member's colour, only when [tinted]
  *
  * @param tinted emit the per-member colour uniforms and the weight helper the colour fold needs. A
@@ -97,37 +98,10 @@ private fun mergePrelude(count: Int, tinted: Boolean): String {
         appendLine("    return d${count - 1};")
     }
 
-    // Same walk, but it also carries the centre of whichever member is actually nearest. Costs no
-    // extra distance evaluations — only a running min — and it is what lets each member dome about
-    // itself instead of about the group.
-    //
-    // Only the plain variant needs it as a function: the tinted one runs the same walk inline in
-    // main(), because it has to come away with the colour as well and a function cannot return
-    // seven floats.
-    val fieldFunction = if (tinted) "" else buildString {
-        appendLine("// .x = blended distance, .yz = centre of the nearest member.")
-        appendLine("float3 sceneField(float2 coord) {")
-        appendLine("    float e0 = sdElement(coord, ${UniformRect[0]}, ${UniformRadii[0]});")
-        appendLine("    float d0 = e0;")
-        appendLine("    float n0 = e0;")
-        appendLine("    float2 c0 = ${UniformRect[0]}.xy;")
-        appendLine("    float k0 = ${UniformParam[0]}.x;")
-        for (i in 1 until count) {
-            val p = i - 1
-            appendLine("    float e$i = sdElement(coord, ${UniformRect[i]}, ${UniformRadii[i]});")
-            appendLine("    float k$i = max(k$p, ${UniformParam[i]}.x);")
-            appendLine("    float d$i = smoothMin(d$p, e$i, k$i);")
-            appendLine("    float take$i = step(e$i, n$p);")
-            appendLine("    float n$i = min(n$p, e$i);")
-            appendLine("    float2 c$i = mix(c$p, ${UniformRect[i]}.xy, take$i);")
-        }
-        appendLine("    return float3(d${count - 1}, c${count - 1});")
-        appendLine("}")
-    }
-
-    val weightFunction = if (!tinted) "" else """
+    // Both variants need it now: the members' refraction rides on the same blend as their colour.
+    val weightFunction = """
 // The factor smoothMin() blends two fields with: 1 keeps `a`, 0 keeps `b`. Pulling it out of
-// smoothMin is what lets colour ride on exactly the blend the surface already uses.
+// smoothMin is what lets colour and refraction ride on exactly the blend the surface already uses.
 float blendWeight(float a, float b, float k) {
     if (k <= 0.0) {
         return step(a, b);
@@ -168,7 +142,6 @@ float smoothMin(float a, float b, float k) {
 float sceneDistance(float2 coord) {
 $fold}
 
-$fieldFunction
 // Returns the surface normal in .xy and how trustworthy it is in .z.
 //
 // A smooth minimum is not a true distance function: inside the fillet the field is compressed, and
@@ -195,50 +168,59 @@ $weightFunction"""
 }
 
 /**
- * Resolves the blended distance, the nearest member's centre and — when [tinted] — the blended
- * colour, as straight-line code inside `main()`.
+ * Resolves the blended distance, the nearest member's centre, the blended refraction and — when
+ * [tinted] — the blended colour, as straight-line code inside `main()`.
  *
- * The colour has to ride on the same walk that produces the distance: it is mixed with the very
- * factor `smoothMin` blends the two fields with, so it follows the geometry of the fusion rather
- * than a direction through the group. Pure inside each member, and 50/50 across the neck of a
- * bridge. Doing it in a second pass would mean evaluating every member's field twice per pixel.
+ * The centre is whichever member is actually nearest: it costs no extra distance evaluations, only
+ * a running min, and it is what lets each member dome about itself instead of about the group.
  *
- * Declares `field` and, for the tinted variant, `tintMix` — a premultiplied colour whose `.rgb` is
+ * Refraction and colour have to ride on the same walk that produces the distance: they are mixed
+ * with the very factor `smoothMin` blends the two fields with, so they follow the geometry of the
+ * fusion rather than a direction through the group. Pure inside each member, and 50/50 across the
+ * neck of a bridge — a small round member keeps its own gentle bend right up to where it fuses into
+ * a wider neighbour. Doing it in a second pass would mean evaluating every member's field twice per
+ * pixel, and a function could not return this many floats.
+ *
+ * Declares `field` (`.x` distance, `.yz` nearest centre), `refraction` (`.x` band, `.y`
+ * displacement) and, for the tinted variant, `tintMix` — a premultiplied colour whose `.rgb` is
  * already scaled by its `.a`, because mixing straight RGBA would drag a colour towards black
  * wherever its neighbour is untinted: "no tint" carries no hue to mix with.
  */
-private fun fieldSetup(count: Int, tinted: Boolean): String {
-    if (!tinted) return "    float3 field = sceneField(p);"
-
-    return buildString {
-        appendLine("    float e0 = sdElement(p, ${UniformRect[0]}, ${UniformRadii[0]});")
-        appendLine("    float d0 = e0;")
-        appendLine("    float n0 = e0;")
-        appendLine("    float2 c0 = ${UniformRect[0]}.xy;")
-        appendLine("    float k0 = ${UniformParam[0]}.x;")
+private fun fieldSetup(count: Int, tinted: Boolean): String = buildString {
+    appendLine("    float e0 = sdElement(p, ${UniformRect[0]}, ${UniformRadii[0]});")
+    appendLine("    float d0 = e0;")
+    appendLine("    float n0 = e0;")
+    appendLine("    float2 c0 = ${UniformRect[0]}.xy;")
+    appendLine("    float k0 = ${UniformParam[0]}.x;")
+    appendLine("    float2 r0 = ${UniformParam[0]}.zw;")
+    if (tinted) {
         appendLine(
             "    half4 t0 = half4(${UniformTint[0]}.rgb * half(${UniformParam[0]}.y), " +
                 "half(${UniformParam[0]}.y));"
         )
-        for (i in 1 until count) {
-            val p = i - 1
-            appendLine("    float e$i = sdElement(p, ${UniformRect[i]}, ${UniformRadii[i]});")
-            appendLine("    float k$i = max(k$p, ${UniformParam[i]}.x);")
-            appendLine("    float h$i = blendWeight(d$p, e$i, k$i);")
-            appendLine("    float d$i = smoothMin(d$p, e$i, k$i);")
-            appendLine("    float take$i = step(e$i, n$p);")
-            appendLine("    float n$i = min(n$p, e$i);")
-            appendLine("    float2 c$i = mix(c$p, ${UniformRect[i]}.xy, take$i);")
+    }
+    for (i in 1 until count) {
+        val p = i - 1
+        appendLine("    float e$i = sdElement(p, ${UniformRect[i]}, ${UniformRadii[i]});")
+        appendLine("    float k$i = max(k$p, ${UniformParam[i]}.x);")
+        appendLine("    float h$i = blendWeight(d$p, e$i, k$i);")
+        appendLine("    float d$i = smoothMin(d$p, e$i, k$i);")
+        appendLine("    float take$i = step(e$i, n$p);")
+        appendLine("    float n$i = min(n$p, e$i);")
+        appendLine("    float2 c$i = mix(c$p, ${UniformRect[i]}.xy, take$i);")
+        appendLine("    float2 r$i = mix(${UniformParam[i]}.zw, r$p, h$i);")
+        if (tinted) {
             appendLine(
                 "    half4 m$i = half4(${UniformTint[i]}.rgb * half(${UniformParam[i]}.y), " +
                     "half(${UniformParam[i]}.y));"
             )
             appendLine("    half4 t$i = mix(m$i, t$p, half(h$i));")
         }
-        val last = count - 1
-        appendLine("    float3 field = float3(d$last, c$last);")
-        append("    half4 tintMix = t$last;")
     }
+    val last = count - 1
+    appendLine("    float3 field = float3(d$last, c$last);")
+    append("    float2 refraction = r$last;")
+    if (tinted) append("\n    half4 tintMix = t$last;")
 }
 
 /**
@@ -272,9 +254,9 @@ uniform float aaInverse;
 // reject at the top of main().
 uniform float4 bounds;
 
+// The widest refracting band of any member. Each member bends by its own band and displacement —
+// `paramN.zw`, blended into `refraction` — and this only bounds where the gradient is worth taking.
 uniform float refractionHeight;
-uniform float refractionHeightInverse;
-uniform float refractionAmount;
 uniform float depthEffect;
 
 layout(color) uniform half4 highlightColor;
@@ -338,9 +320,11 @@ ${fieldSetup(count, tinted)}
     }
 
     float2 sampleCoord = coord;
+    // This pixel's own band and displacement, blended from the members around it.
+    float bandHeight = refraction.x;
     // `mask > 0` because the outer rim band brings pixels this far that carry no glass: bending a
     // backdrop that is about to be multiplied by zero coverage is a fetch spent on nothing.
-    if (mask > 0.0 && refractionHeight > 0.0 && -sd < refractionHeight && confidence > 0.0) {
+    if (mask > 0.0 && bandHeight > 0.0 && -sd < bandHeight && confidence > 0.0) {
         float2 bendDirection = grad;
         if (depthEffect > 0.0) {
             // Dome about the *nearest member's* centre, not the group's. Using the group centre
@@ -352,9 +336,9 @@ ${fieldSetup(count, tinted)}
                 bendDirection = normalize(grad + depthEffect * (radial / radialLength));
             }
         }
-        // min(sd, 0) is negative, so 1 - (-x)/h is 1 + x * (1/h) — the same value without a divide.
-        float d =
-            circleMap(1.0 + min(sd, 0.0) * refractionHeightInverse) * refractionAmount * confidence;
+        // min(sd, 0) is negative, so 1 - (-x)/h is 1 + x/h. The band differs from member to
+        // member, so this is a divide per pixel now — but only for pixels inside a band.
+        float d = circleMap(1.0 + min(sd, 0.0) / bandHeight) * refraction.y * confidence;
         sampleCoord = coord + d * bendDirection;
     }
 

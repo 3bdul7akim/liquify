@@ -47,6 +47,8 @@ dependencies {
     implementation(libs.compose.foundation)
     implementation(libs.compose.ui.util)
     compileOnly(libs.jetbrains.annotations)
+
+    testImplementation(libs.junit)
 }
 
 publishing {

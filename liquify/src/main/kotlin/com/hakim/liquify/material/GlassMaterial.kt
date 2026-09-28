@@ -11,6 +11,7 @@ import com.hakim.liquify.BackdropEffectScope
 import com.hakim.liquify.effects.blur
 import com.hakim.liquify.effects.gradientBlur
 import com.hakim.liquify.effects.lens
+import com.hakim.liquify.effects.lensBySize
 import com.hakim.liquify.effects.merge
 import com.hakim.liquify.effects.opacity
 import com.hakim.liquify.effects.tint
@@ -52,6 +53,17 @@ import com.hakim.liquify.shadow.Shadow
  *   [Color.Unspecified] by default, which resolves against the theme when it is drawn — see
  *   [Shadow.defaultColor].
  * @param innerShadow a shadow cast inside the element for a recessed look, `null` by default.
+ * @param refractionBySize take the refraction from each element's own size instead of from
+ *   [refractionHeight] and [refractionAmount], which are then ignored — a quarter of the short side
+ *   for the band, and three eighths (round) to half (elongated) of it for the displacement; see
+ *   [refractionHeightForSize][com.hakim.liquify.effects.refractionHeightForSize] and
+ *   [refractionAmountForSize][com.hakim.liquify.effects.refractionAmountForSize]. One material then
+ *   suits a 32 dp icon button and a 56 dp search field alike, where one fixed pair is right for one
+ *   of them at most. Inside a group every member is refracted by its own size.
+ * @param refractionHeightScale multiplies the band the material resolves — the fixed
+ *   [refractionHeight], or the one the size gives. `1f` leaves it as it is; this is the knob for a
+ *   user setting that makes all glass thicker or thinner without rewriting the rule.
+ * @param refractionAmountScale multiplies the displacement the material resolves, likewise.
  */
 @Immutable
 public data class GlassMaterial(
@@ -66,7 +78,11 @@ public data class GlassMaterial(
     val gradientBlur: Boolean = false,
     val highlight: Highlight? = Highlight.Default,
     val shadow: Shadow? = Shadow.Default,
-    val innerShadow: InnerShadow? = null
+    val innerShadow: InnerShadow? = null,
+    // Last, so that a material spelled out positionally before these existed means what it meant.
+    val refractionBySize: Boolean = false,
+    @param:FloatRange(from = 0.0) val refractionHeightScale: Float = 1f,
+    @param:FloatRange(from = 0.0) val refractionAmountScale: Float = 1f
 ) {
     public companion object {
 
@@ -152,12 +168,21 @@ public fun BackdropEffectScope.material(
     // otherwise drag the soft middle back out over the very rim the effect exists to keep crisp.
     if (hasBlur && !material.gradientBlur) blur(material.blurRadius.toPx())
 
-    lens(
-        refractionHeight = material.refractionHeight.toPx(),
-        refractionAmount = material.refractionAmount.toPx(),
-        depthEffect = material.depthEffect,
-        chromaticAberration = material.chromaticAberration
-    )
+    if (material.refractionBySize) {
+        lensBySize(
+            heightScale = material.refractionHeightScale,
+            amountScale = material.refractionAmountScale,
+            depthEffect = material.depthEffect,
+            chromaticAberration = material.chromaticAberration
+        )
+    } else {
+        lens(
+            refractionHeight = material.refractionHeight.toPx() * material.refractionHeightScale,
+            refractionAmount = material.refractionAmount.toPx() * material.refractionAmountScale,
+            depthEffect = material.depthEffect,
+            chromaticAberration = material.chromaticAberration
+        )
+    }
 
     if (hasBlur && material.gradientBlur) gradientBlur(material.blurRadius.toPx())
 

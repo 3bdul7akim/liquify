@@ -173,9 +173,9 @@ of five lines.
 
 ```kotlin
 GlassMaterial(
-    blurRadius = 10.dp,          // how far the backdrop is blurred
-    refractionHeight = 22.dp,    // thickness of the refracting band at the rim
-    refractionAmount = 30.dp,    // how sharply that band bends the backdrop
+    blurRadius = 8.dp,           // how far the backdrop is blurred
+    refractionHeight = 20.dp,    // thickness of the refracting band at the rim
+    refractionAmount = 35.dp,    // how sharply that band bends the backdrop
     saturation = 1.15f,          // vibrancy; 1f for none
     tint = Color.Unspecified,    // blended into the backdrop; alpha is the amount
     opacity = 1f,                // below 1f lets the raw background through
@@ -185,7 +185,11 @@ GlassMaterial(
 
     highlight = Highlight.Default, // the specular rim, or null for none
     shadow = Shadow.Default,       // the drop shadow, or null for glass that sits flat
-    innerShadow = null             // a recessed look, off by default
+    innerShadow = null,            // a recessed look, off by default
+
+    refractionBySize = false,      // true: take the refraction from each element's own size
+    refractionHeightScale = 1f,    // multiplies the band — fixed or by size
+    refractionAmountScale = 1f     // multiplies the bend — fixed or by size
 )
 ```
 
@@ -196,16 +200,64 @@ app. Passing `shadow` / `highlight` / `innerShadow` to a single `liquify` still 
 they are the one part of a material `effects = { material(…) }` cannot apply — an effects block
 builds the chain the backdrop runs through, while these are drawn by nodes around it.
 
-Three presets ship with it:
+The values above are the defaults, which is also what `Regular` is. Four presets ship with it:
 
-| Preset | blur | refraction H/A | saturation | tint |
-| --- | --- | --- | --- | --- |
-| `Regular` | 8.dp | 20 / 35.dp | 1.15 | none |
-| `Clear` | 0.dp | 20 / 35.dp | 1.0 | none |
-| `Thick` | 22.dp | 32 / 40.dp | 1.6 | white 1 % |
+| Preset | blur | refraction H/A | saturation | tint | rim |
+| --- | --- | --- | --- | --- | --- |
+| `Regular` | 8.dp | 20 / 35.dp | 1.15 | none | `Highlight.Default` |
+| `Clear` | 0.dp | 20 / 35.dp | 1.0 | none | `Highlight.Default` |
+| `Thick` | 22.dp | 32 / 40.dp | 1.6 | white 1 % | `Highlight.Default` |
+| `TwSe` | 6.dp | 24 / 24.dp | 1.15 | none | `Highlight.TwSe` — the two-band drawn edge |
 
 `tint` is deliberately `Color.Unspecified` by default — the material stays colour-neutral so your
 app can tint its glass per theme rather than inherit a fixed one.
+
+### Refraction by size
+
+> Newer than the published artifact — on `main`, not yet in `1.1.0`.
+
+One fixed `refractionHeight` / `refractionAmount` pair is only ever right for one size. The same
+24 dp that reads as glass on a 56 dp search field turns a 32 dp icon button into a lens with no flat
+middle left, and barely registers on a large panel. Switch the material to
+`refractionBySize = true` and every element is refracted by its own measured size instead — the two
+dp values are then ignored:
+
+```kotlin
+ProvideGlassMaterial(GlassMaterial.Regular.copy(refractionBySize = true)) { App() }
+```
+
+With `s` the element's short side and its aspect ratio `long / short`:
+
+| | round (1 : 1) | elongated (from 2 : 1) |
+| --- | --- | --- |
+| band — `refractionHeightForSize(w, h)` | `s / 4` | `s / 4` |
+| bend — `refractionAmountForSize(w, h)` | `s × 3/8` | `s / 2` |
+
+— blended smoothly in between, and linear in the size, so the proportions and therefore the look are
+identical at every size. The short side, because it is the one the band can run out of: a capsule's
+rim wraps its ends at the radius of its height, and a wide one is no thicker there for being long.
+The shape matters as well, because a circle's rim closes in on a small middle from every side —
+a capsule has its long axis to spread the same pull along and carries more before it reads as a
+fisheye.
+
+| Element | size (dp) | band / bend (dp) |
+| --- | --- | --- |
+| icon button, circle | 32 × 32 | 8 / 12 |
+| icon button, circle | 48 × 48 | 12 / 18 |
+| text button, capsule | 48 × 100 | 12 / 24 |
+| search field | 56 × 360 | 14 / 28 |
+| menu | 150 × 250 | 37.5 / 70 |
+
+`refractionHeightScale` and `refractionAmountScale` multiply the result — the knob for a user
+setting that makes all glass thicker or thinner without rewriting the rule. They apply to the fixed
+pair as well when the size rule is off.
+
+The effect follows the element as it resizes, so a pane growing open keeps a band in proportion the
+whole way. From a hand-written effects block, call `lensBySize(heightScale, amountScale, …)` where
+you would call `lens(…)`. Inside a [group](#merging--the-gooey-effect) every member is refracted by
+its *own* size, blended across the bridges exactly like the [members' colours](#colours-that-mix).
+The two formulas are public, unit-agnostic functions (pixels in, pixels out) for anything else that
+wants to size itself the same way.
 
 ### App-wide theming
 
@@ -288,6 +340,7 @@ scope is a `Density`, so `16.dp.toPx()` works directly inside the block.
 | `blur(radius, edgeTreatment)` | Gaussian blur of the backdrop. |
 | `gradientBlur(radius, fadeWidth, clearWidth, steps, edgeTreatment)` | Blur that ramps up from nothing at the border. |
 | `lens(refractionHeight, refractionAmount, depthEffect, chromaticAberration)` | Bends the backdrop at the rim. The one that makes it glass. |
+| `lensBySize(heightScale, amountScale, depthEffect, chromaticAberration)` | `lens` with both inputs taken from the element's size — see [Refraction by size](#refraction-by-size). |
 | `vibrancy(amount)` | Saturation boost so colours survive the blur. |
 | `tint(color)` | Blends the backdrop toward a colour, *before* refraction. |
 | `colorControls(brightness, contrast, saturation)` | All three in one pass. |
@@ -460,6 +513,11 @@ The material overload routes `tint` here for you. From a hand-written `effects` 
 [`mergeTint(color)`](#effects) yourself. Only groups whose members actually declare a colour compile
 the tinted program, so this costs nothing when it is not used.
 
+The refraction rides on the same weights. Every member carries its own band and bend — the group's
+fixed `lens()` pair for all of them, or under `lensBySize()` the pair each member's own size gives —
+so a small round member keeps its gentle bend right up to where it fuses into a wider neighbour, and
+a button looks the same merged as it does on its own.
+
 **Up to twelve members per group.** Cost is linear in that count — each pixel evaluates every
 member's field five times, once for the distance and four for the gradient — so the group renders
 only over the union of its members, never the whole screen. Keep groups tight.
@@ -567,9 +625,9 @@ a slop threshold and without consuming events.
 ## Rims, shadows and transitions
 
 ```kotlin
-Highlight(width = 0.5.dp, blurRadius = width / 2, alpha = 1f, style = HighlightStyle.Default)
-Shadow(radius = 24.dp, offset = DpOffset(0.dp, radius / 6), color = Color.Unspecified)
-InnerShadow(radius = 24.dp, offset = DpOffset(0.dp, radius), color = Color.Unspecified)
+Highlight(width = 0.25.dp, blurRadius = width / 2, alpha = 1f, style = HighlightStyle.Default)
+Shadow(radius = 7.5.dp, offset = DpOffset(0.dp, radius / 1.5f), color = Color.Unspecified)
+InnerShadow(radius = 18.dp, offset = DpOffset(0.dp, radius), color = Color.Unspecified)
 ```
 
 ### Shadows follow the theme
@@ -696,7 +754,7 @@ the reference for how to use the library, and every component in it is meant to 
 | Morphing | One capsule splitting into three controls, bridged while it travels |
 | Menu emergence | A menu growing out of the button that opened it |
 | Interactive controls | Buttons, toggles and sliders that flex and light up |
-| Materials | `Regular`, `Clear` and `Thick` — **tap one and the whole app switches to it** |
+| Materials | `Regular`, `Clear`, `Thick` and `TwSe` — **tap one and the whole app switches to it** |
 | Playground | Every parameter of the effect stack on a slider |
 | Scroll & bars | Floating glass over a list moving underneath it |
 
@@ -757,7 +815,7 @@ Used shapes come from **[Kyant0/Shapes][shapes]**, consumed as a Maven artifact 
 See [`NOTICE`](NOTICE) for the formal attribution.
 
 What Liquify adds on top: the merged distance-field pass and the whole group renderer, per-member
-colour blended through that same field, gradient blur, the material presets and app-wide material
+colour and refraction blended through that same field, refraction sized to each element, gradient blur, the material presets and app-wide material
 theming, the one-line interaction flags, the consolidation of `drawBackdrop` and `liquify` into a
 single modifier, and `LocalGlassEnabled` — a one-line way for an app to switch the whole material
 off without rewriting a call site.
