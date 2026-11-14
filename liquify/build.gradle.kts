@@ -138,8 +138,10 @@ tasks.register<Zip>("centralBundle") {
     destinationDirectory.set(layout.buildDirectory.dir("central"))
 
     // Resolved as a provider rather than read off the task inside the action, so the
-    // configuration cache (on for this build) can serialise it.
-    val bundlePath = archiveFile.map { it.asFile.absolutePath }
+    // configuration cache (on for this build) can serialise it. Built from the directory and the
+    // name rather than from `archiveFile`: Gradle 9 refuses a mapped value of the task's own output
+    // while the task is still running.
+    val bundlePath = destinationDirectory.file(archiveFileName).map { it.asFile.absolutePath }
     doLast {
         logger.lifecycle("Central Portal bundle: ${bundlePath.get()}")
     }
