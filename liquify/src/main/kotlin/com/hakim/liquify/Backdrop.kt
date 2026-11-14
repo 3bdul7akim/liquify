@@ -13,33 +13,29 @@ import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.unit.Density
 
 /**
- * The source of pixels a glass element refracts and blurs — the *thing behind the glass*.
+ * What is behind the glass — the pixels a pane refracts and blurs.
  *
- * A backdrop is not a snapshot: it is re-drawn every frame into the element's own layer, which is
+ * A backdrop is not a snapshot: it is drawn again every frame into the pane's own layer, which is
  * what lets glass track a scrolling list or a moving wallpaper. Obtain one with
- * [rememberLayerBackdrop][com.hakim.liquify.backdrops.rememberLayerBackdrop] (capture real
- * composables), [rememberCanvasBackdrop][com.hakim.liquify.backdrops.rememberCanvasBackdrop]
- * (draw something procedurally) or [emptyBackdrop][com.hakim.liquify.backdrops.emptyBackdrop].
+ * [rememberLayerBackdrop] (real composables), [rememberCanvasBackdrop] (something drawn) or
+ * [emptyBackdrop], and declare it once with [LiquifyTheme].
  */
 public interface Backdrop {
 
     /**
-     * Whether [drawBackdrop] needs the element's [LayoutCoordinates] to position its content.
-     *
-     * Returning `false` lets the element skip global-position tracking entirely, which removes a
-     * layout listener per glass element.
+     * Whether [drawBackdrop] needs the consuming element's [LayoutCoordinates]. `false` lets the
+     * element skip position tracking for it.
      */
     public val isCoordinatesDependent: Boolean
 
     /**
-     * Draws the backdrop content into the current (already offset) draw scope.
+     * Draws the backdrop as the consuming element sees it, into the current draw scope.
      *
-     * @param density the density of the consuming element, which may differ from the recording
-     *   scope's density when the element sits inside a scaled layer.
+     * @param density the consuming element's density.
      * @param coordinates the consuming element's coordinates, or `null` when
      *   [isCoordinatesDependent] is `false`.
-     * @param layerBlock the consuming element's own graphics-layer transform, so the backdrop can
-     *   invert it and stay anchored in screen space.
+     * @param layerBlock the consuming element's own layer transform, so the backdrop can invert it and
+     *   stay anchored in screen space.
      */
     public fun DrawScope.drawBackdrop(
         density: Density,

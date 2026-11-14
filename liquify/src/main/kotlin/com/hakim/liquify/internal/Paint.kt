@@ -11,13 +11,13 @@ import android.graphics.BlurMaskFilter
 import android.os.Build
 import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.nativePaint
-import com.hakim.liquify.RuntimeShader
 
 /**
  * Softens whatever the paint draws, including strokes and shader fills.
  *
- * A mask filter blurs the *coverage* of the geometry, which is why it works for a rim stroke where
- * a layer-wide render effect would also blur what the shader put inside it.
+ * A mask filter blurs the *coverage* of the geometry. The decoration only uses it below API 31,
+ * which has no render effect to blur with; from there on it blurs a layer instead — see BlurLayer in
+ * GlassDecoration for why.
  */
 internal fun Paint.blur(radius: Float) {
     nativePaint.maskFilter =

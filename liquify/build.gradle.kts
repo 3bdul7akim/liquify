@@ -7,7 +7,7 @@ plugins {
 
 val libraryGroupId = "io.github.3bdul7akim"
 val libraryArtifactId = "liquify"
-val libraryVersion = "1.1.0"
+val libraryVersion = "2.0.0"
 
 android {
     namespace = "com.hakim.liquify"
@@ -120,7 +120,7 @@ publishing {
  * `maven-metadata` is excluded: it describes a repository rather than a release, and the portal
  * rejects a bundle that carries one.
  */
-val centralBundle by tasks.registering(Zip::class) {
+tasks.register<Zip>("centralBundle") {
     group = "publishing"
     description = "Builds the Central Portal upload bundle for the release publication."
 

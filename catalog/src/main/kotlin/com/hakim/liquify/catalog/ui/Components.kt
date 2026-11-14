@@ -2,41 +2,55 @@ package com.hakim.liquify.catalog.ui
 
 import android.annotation.SuppressLint
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicText
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
-import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.hakim.liquify.Backdrop
-import com.hakim.liquify.BackdropEffectScope
-import com.hakim.liquify.ProvideBackdrop
-import com.hakim.liquify.backdrops.rememberCanvasBackdrop
+import com.hakim.liquify.LiquifyTheme
 import com.hakim.liquify.catalog.ui.components.LiquidSlider
+import com.hakim.liquify.catalog.ui.components.topBarClearance
+import com.hakim.liquify.colorBackdrop
 import com.hakim.liquify.liquify
-import com.hakim.liquify.material.GlassMaterial
-import com.hakim.liquify.material.LocalGlassMaterial
-import com.hakim.liquify.material.rememberGlassEffects
 import com.kyant.shapes.Capsule
 import com.kyant.shapes.RoundedRectangle
 
 val CapsuleShape: Shape = Capsule()
 val CardShape: Shape = RoundedRectangle(28.dp)
+
+/**
+ * [CapsuleShape] as the circular capsule, for what a component clips to or draws itself on every
+ * frame — a track, a knob, a tab's touch area. The renderer handles it analytically, where the
+ * continuous capsule is a path: clipped to, it costs a coverage mask for every draw inside it on every
+ * frame; drawn small, it is rasterised into a path atlas on every frame. At the ends of a capsule the
+ * two curves differ by 0.03 % of the radius. Glass keeps [CapsuleShape], whose rim follows the curve.
+ */
+val CircularCapsule: Shape = CircleShape
 
 // Composable properties rather than plain vals: the colour comes from the theme, so it has to be
 // read inside composition to follow a light/dark switch without the app being restarted.
@@ -74,27 +88,22 @@ fun CatalogText(text: String, style: TextStyle = BodyStyle, @SuppressLint("Modif
 }
 
 /**
- * The catalog's default glass treatment.
+ * The catalog's default pane of glass.
  *
- * The material is *not* hard-coded: it comes from
- * [LocalGlassMaterial][com.hakim.liquify.material.LocalGlassMaterial], so picking a different one
- * on the Materials screen re-renders every surface in the app at once.
+ * It names nothing but its shape: backdrop, material and tint all come from the [LiquifyTheme] at
+ * the root, so picking a different material on the Materials screen re-renders every surface at once.
  */
 @Composable
 fun GlassSurface(
-    backdrop: Backdrop,
     modifier: Modifier = Modifier,
     shape: Shape = CardShape,
     dragging: Boolean = false,
     interactiveHighlight: Boolean = false,
-    tintColor: Color = LocalCatalogColors.current.glassTint,
     content: @Composable BoxScope.() -> Unit = {}
 ) {
     Box(
         modifier = modifier.liquify(
             shape = shape,
-            backdrop = backdrop,
-            tint = tintColor,
             dragging = dragging,
             interactiveHighlight = interactiveHighlight
         ),
@@ -107,66 +116,46 @@ fun GlassSurface(
  *
  * Two jobs, both of which glass does badly:
  *
- * - **It carries glass controls.** A toggle or a slider is already a pane of glass; sitting it on
- *   another one means one backdrop showing through the other, and the two refractions fight. A flat
- *   surface gives them something definite to sit on.
- * - **It backs bare text.** Anything drawn straight onto the wallpaper is at the mercy of whatever
- *   the photograph happens to be doing behind it, which in light mode means dark text on a dark
- *   leaf. This guarantees the contrast instead of hoping for it.
+ * - **It carries glass controls.** A toggle or a slider is already a pane of glass; on another one,
+ *   one backdrop shows through the other and the two refractions fight.
+ * - **It backs bare text**, whose contrast would otherwise depend on the photograph behind it.
  *
- * The [Backdrop] handed to [content] is the surface's own colour, so a glass control inside
- * refracts *this* card rather than the wallpaper it hides. It is also provided as
- * [LocalBackdrop][com.hakim.liquify.LocalBackdrop], so a bare `liquify()` inside picks it up on its
- * own.
+ * It declares its own colour as the backdrop for everything inside, so a glass control in it
+ * refracts *this* card rather than the wallpaper it hides — and does so without being told.
  */
 @Composable
 fun MaterialSurface(
     modifier: Modifier = Modifier,
     shape: Shape = CardShape,
-    content: @Composable BoxScope.(backdrop: Backdrop) -> Unit
+    content: @Composable BoxScope.() -> Unit
 ) {
     val surfaceColor = LocalCatalogColors.current.materialSurface
-    // Remembered on the colour: rememberCanvasBackdrop keys on the lambda, so a fresh one per
-    // recomposition would rebuild the backdrop every frame.
-    val onDraw: DrawScope.() -> Unit = remember(surfaceColor) { { drawRect(surfaceColor) } }
-    val surfaceBackdrop = rememberCanvasBackdrop(onDraw)
+    val surfaceBackdrop = colorBackdrop(surfaceColor)
 
     Box(modifier.background(surfaceColor, shape)) {
-        ProvideBackdrop(surfaceBackdrop) {
-            content(surfaceBackdrop)
+        LiquifyTheme(backdrop = surfaceBackdrop) {
+            content()
         }
     }
 }
 
 /**
- * The app's material with the theme's glass tint folded in, as an effects block.
- *
- * This is what a [LiquidGlassGroup][com.hakim.liquify.group.LiquidGlassGroup] needs: a group takes
- * an effect stack rather than a material, and it has to be a stable instance or the group rebuilds
- * its inherited defaults every recomposition.
- */
-@Composable
-fun catalogGlassEffects(
-    material: GlassMaterial = LocalGlassMaterial.current
-): BackdropEffectScope.() -> Unit =
-    rememberGlassEffects(material.copy(tint = LocalCatalogColors.current.glassTint))
-
-/**
  * A labelled slider row, used throughout the playground.
  *
- * [value] is a lambda, not a `Float`, on purpose: the slider observes it with `snapshotFlow`, so a
- * captured value would be read once and then never again and the thumb would sit still while the
- * number above it changed.
+ * [value] is a lambda, not a `Float`: the slider observes it with `snapshotFlow`, so a captured value
+ * would be read once and the thumb would sit still while the number above it changed.
+ *
+ * @param defaultValue what a double tap on the thumb returns to, or `null` for none.
  */
 @Composable
 fun ParameterRow(
-    backdrop: Backdrop,
     label: String,
     value: () -> Float,
     valueLabel: String,
     valueRange: ClosedFloatingPointRange<Float> = 0f..1f,
     onValueChange: (Float) -> Unit,
-    @SuppressLint("ModifierParameter") modifier: Modifier = Modifier
+    @SuppressLint("ModifierParameter") modifier: Modifier = Modifier,
+    defaultValue: Float? = null,
 ) {
     Column(modifier.fillMaxWidth().padding(vertical = 5.dp)) {
         Row(
@@ -179,10 +168,81 @@ fun ParameterRow(
         LiquidSlider(
             value = value,
             onValueChange = onValueChange,
-            backdrop = backdrop,
             valueRange = valueRange,
-            modifier = Modifier.fillMaxWidth().height(32.dp)
+            modifier = Modifier.fillMaxWidth().height(32.dp),
+            defaultValue = defaultValue,
         )
+    }
+}
+
+/** Room for a screen's content: under the top bar, above the navigation bar. */
+@Composable
+fun screenPadding(horizontal: Dp = 20.dp): PaddingValues = PaddingValues(
+    start = horizontal,
+    top = topBarClearance() + 12.dp,
+    end = horizontal,
+    bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 30.dp,
+)
+
+/** A screen's scrolling column of demos, cleared of the top bar and the navigation bar. */
+@Composable
+fun ScreenColumn(content: @Composable ColumnScope.() -> Unit) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(screenPadding()),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+        content = content,
+    )
+}
+
+/**
+ * A titled demo card: a plain surface with a heading and a line of explanation, then the demo. The
+ * surface is not glass on purpose — see [MaterialSurface].
+ */
+@Composable
+fun DemoCard(
+    title: String,
+    description: String,
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    MaterialSurface(modifier.fillMaxWidth()) {
+        Column(Modifier.padding(18.dp)) {
+            CatalogText(title, HeadingStyle)
+            Spacer(Modifier.height(4.dp))
+            CatalogText(description, BodyStyle)
+            Spacer(Modifier.height(14.dp))
+            content()
+        }
+    }
+}
+
+/**
+ * A heading and a line of explanation on a plain surface, for a demo that sits on the wallpaper
+ * below it — glass that has to refract something rather than a card's flat colour.
+ */
+@Composable
+fun DemoNote(title: String, description: String, modifier: Modifier = Modifier) {
+    MaterialSurface(modifier.fillMaxWidth()) {
+        Column(Modifier.padding(18.dp)) {
+            CatalogText(title, HeadingStyle)
+            Spacer(Modifier.height(4.dp))
+            CatalogText(description, BodyStyle)
+        }
+    }
+}
+
+/** A label on the left and a control on the right — a toggle, mostly. */
+@Composable
+fun SettingRow(label: String, modifier: Modifier = Modifier, control: @Composable () -> Unit) {
+    Row(
+        modifier.fillMaxWidth().padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        CatalogText(label, LabelStyle, Modifier.weight(1f))
+        control()
     }
 }
 

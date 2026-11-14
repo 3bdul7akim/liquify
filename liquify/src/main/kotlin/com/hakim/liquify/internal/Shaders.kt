@@ -56,10 +56,89 @@ float circleMap(float x) {
     return 1.0 - sqrt(1.0 - x * x);
 }"""
 
+/**
+ * The colour work of the effects in front of a program — vibrancy, tint, opacity — folded into it
+ * instead of running as a render pass of its own. See `BaseBackdropEffectScope.pendingColor`.
+ *
+ * The result is a `ColorMatrixColorFilter`'s — unpremultiply, map, clamp, premultiply again — but it
+ * is worked out on the premultiplied colour directly. Every matrix those effects build leaves alpha
+ * alone and never lets a colour channel read it (see `ColorMatrices.toShaderUniforms`); for such a
+ * matrix `clamp(M·c/a + t, 0, 1)·a` is exactly `clamp(M·c + t·a, 0, a)`. That drops the divide, the
+ * branch on alpha that guarded it and the alpha row and column of the matrix — and it runs on every
+ * pixel of every pane, the deep interior included.
+ *
+ * Half precision throughout: colour leaves at eight bits, which fp16 carries with room to spare, and
+ * most mobile GPUs run fp16 at twice the rate of fp32 with half the registers.
+ */
+@Language("AGSL")
+internal const val COLOR_MATRIX: String = """
+// The colour rows' linear part, column-major, and their translation in 0..1.
+uniform half3x3 colorMatrix;
+uniform half3 colorOffset;
+// 0 when there is no colour work to do. A uniform, so the branch below is coherent across the draw
+// and glass without any colour effect pays nothing for this.
+uniform half colorFiltered;
+
+half4 filtered(half4 color) {
+    if (colorFiltered == 0.0) {
+        return color;
+    }
+    half3 rgb = clamp(colorMatrix * color.rgb + colorOffset * color.a, half3(0.0), half3(color.a));
+    return half4(rgb, color.a);
+}"""
+
+/**
+ * The pane's own colour, laid over the refracted backdrop by the lens instead of by a draw of its own:
+ * that draw blended the whole pane a second time on every frame, behind a clip. Unpremultiplied as
+ * set, so a transparent fill leaves the colour as it is — no branch, and nothing to switch off.
+ */
+@Language("AGSL")
+internal const val FILL: String = """
+layout(color) uniform half4 fill;
+
+half4 withFill(half4 color) {
+    return half4(fill.rgb * fill.a, fill.a) + color * (1.0 - fill.a);
+}"""
+
+/**
+ * A small blur taken in by the pass that samples the backdrop anyway: nine bilinear taps on a 3×3
+ * grid `blurSpacing` apart, weighted 1-2-1 along each axis. Zero spacing — no blur to take in — is
+ * one tap, and a uniform, so that branch is coherent across the draw.
+ *
+ * Nine is what the look needs. The fetches are most of what a pane costs the GPU — measured on an
+ * Adreno 642L, one tap instead of nine took two milliseconds off a frame — but five taps spread just
+ * as far, on the diagonals, left visible copies of every glyph behind the glass.
+ *
+ * Run as an effect of its own, a blur is two more render passes for every pane: the layer drawn into
+ * a texture, blurred along one axis into a second and along the other into a third, before the lens
+ * reads it. On a page with a dozen panes that was most of what the glass cost. The light blur of a
+ * control — a couple of dp, under a fill most of the way to opaque — is as well served by nine taps
+ * here. See `BaseBackdropEffectScope.foldedBlur` for which blurs come this way.
+ *
+ * Needs `uniform shader content` declared before it.
+ */
+@Language("AGSL")
+internal const val BLUR_TAPS_FUNCTION: String = """
+uniform float blurSpacing;
+
+half4 backdropAt(float2 coord) {
+    if (blurSpacing <= 0.0) {
+        return content.eval(coord);
+    }
+    float s = blurSpacing;
+    half4 sum = content.eval(coord) * 4.0;
+    sum += (content.eval(coord + float2(s, 0.0)) + content.eval(coord - float2(s, 0.0)) +
+        content.eval(coord + float2(0.0, s)) + content.eval(coord - float2(0.0, s))) * 2.0;
+    sum += content.eval(coord + float2(s, s)) + content.eval(coord - float2(s, s)) +
+        content.eval(coord + float2(s, -s)) + content.eval(coord + float2(-s, s));
+    return sum * (1.0 / 16.0);
+}"""
+
 /** Edge refraction: bends the backdrop inside a band of `refractionHeight` around the border. */
 @Language("AGSL")
 internal const val REFRACTION_SHADER: String = """
 uniform shader content;
+$BLUR_TAPS_FUNCTION
 
 uniform float2 halfSize;
 // `offset - halfSize`, folded on the CPU. Centring the coordinate was an add and a subtract on
@@ -69,6 +148,8 @@ uniform float2 centerOffset;
 // band, again for a value that does not vary across the draw.
 uniform float halfMinSize;
 uniform float4 cornerRadii;
+// refractionHeight plus the largest of the corner radii, folded on the CPU; see the interior test.
+uniform float interiorDepth;
 uniform float refractionHeight;
 // 1 / refractionHeight, folded on the CPU. Every pixel inside the band divided by it to arrive at
 // a value that is the same for all of them; a reciprocal multiply is several times cheaper.
@@ -76,41 +157,116 @@ uniform float refractionHeightInverse;
 uniform float refractionAmount;
 uniform float depthEffect;
 
+$COLOR_MATRIX
+$FILL
+
 $ROUNDED_RECT_SDF
 
-half4 main(float2 coord) {
+half4 refracted(float2 coord) {
     float2 centeredCoord = coord + centerOffset;
-    float radius = radiusAt(centeredCoord, cornerRadii);
 
     // Conservative interior test, before the field itself. Rounding only ever pulls the boundary
-    // inward, and never by more than the corner radius, so a pixel this far inside the axis-aligned
-    // bounds is certainly past the band. Three ALU ops here let every deep-interior pixel skip the
-    // SDF's length() — on a large pane that is nearly all of them, and for a plain rectangle this
-    // test is exact rather than merely conservative.
+    // inward, and never by more than the largest corner radius, so a pixel this far inside the
+    // axis-aligned bounds is certainly past the band. A handful of ALU ops here let every
+    // deep-interior pixel skip the SDF's length() — on a large pane that is nearly all of them.
+    //
+    // Measured against the largest radius, folded into interiorDepth on the CPU, rather than this
+    // quadrant's: the test then needs no radius at all, and the lookup it saves ran on every pixel.
+    // A pixel it lets through that the quadrant's own radius would have caught leaves at the next
+    // test instead, with the same result.
     float2 inset = halfSize - abs(centeredCoord);
-    if (min(inset.x, inset.y) >= refractionHeight + radius) {
-        return content.eval(coord);
+    if (min(inset.x, inset.y) >= interiorDepth) {
+        return filtered(backdropAt(coord));
     }
 
+    float radius = radiusAt(centeredCoord, cornerRadii);
     float sd = sdRoundedRect(centeredCoord, halfSize, radius);
     if (-sd >= refractionHeight) {
-        return content.eval(coord);
+        return filtered(backdropAt(coord));
     }
     sd = min(sd, 0.0);
 
     // sd is negative here, so 1 - (-sd)/h is 1 + sd * (1/h) — the same value without the divide.
-    float d = circleMap(1.0 + sd * refractionHeightInverse) * refractionAmount;
+    float t = 1.0 + sd * refractionHeightInverse;
+    float d = circleMap(t) * refractionAmount;
     float gradRadius = min(radius * 1.5, halfMinSize);
     // gradSdRoundedRect already returns a unit vector — both of its branches do — so without a
     // depth term the outer normalize() is a no-op and the inner one is computed only to be
     // multiplied by zero. depthEffect is a uniform, so this branch is coherent across the entire
     // draw: the GPU takes one side, not both.
-    float2 grad = gradSdRoundedRect(centeredCoord, halfSize, gradRadius);
+    float2 normal = gradSdRoundedRect(centeredCoord, halfSize, gradRadius);
+    float2 grad = normal;
     if (depthEffect != 0.0) {
-        grad = normalize(grad + depthEffect * normalize(centeredCoord));
+        grad = normalize(normal + depthEffect * normalize(centeredCoord));
     }
 
-    return content.eval(coord + d * grad);
+    return filtered(backdropAt(coord + d * grad));
+}
+
+half4 main(float2 coord) {
+    return withFill(refracted(coord));
+}"""
+
+/**
+ * The seven taps across the spectrum around one refracted point — the fringe of chromatic
+ * aberration, shared by a single pane's lens and a merged body's so the two fringe alike. Needs
+ * `uniform shader content`, [BLUR_TAPS_FUNCTION]'s `backdropAt()` and [COLOR_MATRIX]'s `filtered()`
+ * declared before it.
+ *
+ * A small blur taken in by the lens reaches the fringe through its middle tap and wherever the
+ * fringe is too small to see: blurring all seven would be sixty-three fetches per pixel of the band,
+ * and the outer taps only lend their colour to an edge the lens is bending anyway.
+ */
+@Language("AGSL")
+internal const val DISPERSION_FUNCTION: String = """
+// The seven taps across the spectrum around one refracted point.
+half4 dispersed(float2 refractedCoord, float2 dispersedCoord) {
+    // The fringe is a product of the bend and of x·y, so it vanishes along both centre lines and
+    // towards the inner edge of the band. Where the seven taps would all land within a tenth of a
+    // pixel of each other they read the same colour, and the weights below add up to exactly that
+    // colour — so one fetch gives what seven did.
+    if (dot(dispersedCoord, dispersedCoord) < 0.01) {
+        return filtered(backdropAt(refractedCoord));
+    }
+
+    half4 color = half4(0.0);
+
+    // Each tap is filtered on its own, as the colour pass in front of this program used to see it:
+    // the channels below are picked from different taps, which a matrix applied to the sum would
+    // mix up.
+    half4 red = filtered(content.eval(refractedCoord + dispersedCoord));
+    color.r += red.r / 3.5;
+    color.a += red.a / 7.0;
+
+    half4 orange = filtered(content.eval(refractedCoord + dispersedCoord * (2.0 / 3.0)));
+    color.r += orange.r / 3.5;
+    color.g += orange.g / 7.0;
+    color.a += orange.a / 7.0;
+
+    half4 yellow = filtered(content.eval(refractedCoord + dispersedCoord * (1.0 / 3.0)));
+    color.r += yellow.r / 3.5;
+    color.g += yellow.g / 3.5;
+    color.a += yellow.a / 7.0;
+
+    half4 green = filtered(backdropAt(refractedCoord));
+    color.g += green.g / 3.5;
+    color.a += green.a / 7.0;
+
+    half4 cyan = filtered(content.eval(refractedCoord - dispersedCoord * (1.0 / 3.0)));
+    color.g += cyan.g / 3.5;
+    color.b += cyan.b / 3.0;
+    color.a += cyan.a / 7.0;
+
+    half4 blue = filtered(content.eval(refractedCoord - dispersedCoord * (2.0 / 3.0)));
+    color.b += blue.b / 3.0;
+    color.a += blue.a / 7.0;
+
+    half4 purple = filtered(content.eval(refractedCoord - dispersedCoord));
+    color.r += purple.r / 7.0;
+    color.b += purple.b / 3.0;
+    color.a += purple.a / 7.0;
+
+    return color;
 }"""
 
 /**
@@ -120,12 +276,15 @@ half4 main(float2 coord) {
 @Language("AGSL")
 internal const val REFRACTION_DISPERSION_SHADER: String = """
 uniform shader content;
+$BLUR_TAPS_FUNCTION
 
 uniform float2 halfSize;
 // See the plain refraction program: both of these are folded on the CPU.
 uniform float2 centerOffset;
 uniform float halfMinSize;
 uniform float4 cornerRadii;
+// As in the plain refraction program: refractionHeight plus the largest corner radius.
+uniform float interiorDepth;
 uniform float refractionHeight;
 // 1 / refractionHeight, folded on the CPU. Every pixel inside the band divided by it to arrive at
 // a value that is the same for all of them; a reciprocal multiply is several times cheaper.
@@ -136,152 +295,57 @@ uniform float depthEffect;
 // half area on every pixel of the band, by a quantity that does not vary across the draw.
 uniform float dispersionScale;
 
-$ROUNDED_RECT_SDF
+$COLOR_MATRIX
+$FILL
 
-half4 main(float2 coord) {
+$ROUNDED_RECT_SDF
+$DISPERSION_FUNCTION
+
+half4 refracted(float2 coord) {
     float2 centeredCoord = coord + centerOffset;
-    float radius = radiusAt(centeredCoord, cornerRadii);
 
     // Conservative interior test, before the field itself. Rounding only ever pulls the boundary
-    // inward, and never by more than the corner radius, so a pixel this far inside the axis-aligned
-    // bounds is certainly past the band. Three ALU ops here let every deep-interior pixel skip the
-    // SDF's length() — on a large pane that is nearly all of them, and for a plain rectangle this
-    // test is exact rather than merely conservative.
+    // inward, and never by more than the largest corner radius, so a pixel this far inside the
+    // axis-aligned bounds is certainly past the band. A handful of ALU ops here let every
+    // deep-interior pixel skip the SDF's length() — on a large pane that is nearly all of them.
+    //
+    // Measured against the largest radius, folded into interiorDepth on the CPU, rather than this
+    // quadrant's: the test then needs no radius at all, and the lookup it saves ran on every pixel.
+    // A pixel it lets through that the quadrant's own radius would have caught leaves at the next
+    // test instead, with the same result.
     float2 inset = halfSize - abs(centeredCoord);
-    if (min(inset.x, inset.y) >= refractionHeight + radius) {
-        return content.eval(coord);
+    if (min(inset.x, inset.y) >= interiorDepth) {
+        return filtered(backdropAt(coord));
     }
 
+    float radius = radiusAt(centeredCoord, cornerRadii);
     float sd = sdRoundedRect(centeredCoord, halfSize, radius);
     if (-sd >= refractionHeight) {
-        return content.eval(coord);
+        return filtered(backdropAt(coord));
     }
     sd = min(sd, 0.0);
 
     // sd is negative here, so 1 - (-sd)/h is 1 + sd * (1/h) — the same value without the divide.
-    float d = circleMap(1.0 + sd * refractionHeightInverse) * refractionAmount;
+    float t = 1.0 + sd * refractionHeightInverse;
+    float d = circleMap(t) * refractionAmount;
     float gradRadius = min(radius * 1.5, halfMinSize);
     // gradSdRoundedRect already returns a unit vector — both of its branches do — so without a
     // depth term the outer normalize() is a no-op and the inner one is computed only to be
     // multiplied by zero. depthEffect is a uniform, so this branch is coherent across the entire
     // draw: the GPU takes one side, not both.
-    float2 grad = gradSdRoundedRect(centeredCoord, halfSize, gradRadius);
+    float2 normal = gradSdRoundedRect(centeredCoord, halfSize, gradRadius);
+    float2 grad = normal;
     if (depthEffect != 0.0) {
-        grad = normalize(grad + depthEffect * normalize(centeredCoord));
+        grad = normalize(normal + depthEffect * normalize(centeredCoord));
     }
 
-    float2 refractedCoord = coord + d * grad;
     float dispersionIntensity = dispersionScale * (centeredCoord.x * centeredCoord.y);
-    float2 dispersedCoord = d * grad * dispersionIntensity;
 
-    half4 color = half4(0.0);
-
-    half4 red = content.eval(refractedCoord + dispersedCoord);
-    color.r += red.r / 3.5;
-    color.a += red.a / 7.0;
-
-    half4 orange = content.eval(refractedCoord + dispersedCoord * (2.0 / 3.0));
-    color.r += orange.r / 3.5;
-    color.g += orange.g / 7.0;
-    color.a += orange.a / 7.0;
-
-    half4 yellow = content.eval(refractedCoord + dispersedCoord * (1.0 / 3.0));
-    color.r += yellow.r / 3.5;
-    color.g += yellow.g / 3.5;
-    color.a += yellow.a / 7.0;
-
-    half4 green = content.eval(refractedCoord);
-    color.g += green.g / 3.5;
-    color.a += green.a / 7.0;
-
-    half4 cyan = content.eval(refractedCoord - dispersedCoord * (1.0 / 3.0));
-    color.g += cyan.g / 3.5;
-    color.b += cyan.b / 3.0;
-    color.a += cyan.a / 7.0;
-
-    half4 blue = content.eval(refractedCoord - dispersedCoord * (2.0 / 3.0));
-    color.b += blue.b / 3.0;
-    color.a += blue.a / 7.0;
-
-    half4 purple = content.eval(refractedCoord - dispersedCoord);
-    color.r += purple.r / 7.0;
-    color.b += purple.b / 3.0;
-    color.a += purple.a / 7.0;
-
-    return color;
-}"""
-
-/**
- * Weights one stop of a progressive blur by how far inside the outline each pixel sits.
- *
- * The element is blurred several times over at increasing radii, and each of those copies runs
- * through this program with a different `stopIndex`. The weight is a hat function centred on the
- * stop, so a pixel is only ever mixed from the two copies whose radii bracket the blur it should
- * have — never from the sharp original and the heaviest blur at once.
- *
- * That is what makes the gradient read as gradual. Cross-fading sharp against fully blurred does
- * not produce an intermediate blur, it produces sharp detail at reduced amplitude laid over a soft
- * base; detail stays legible until the mix is nearly all blur and then disappears at once, so the
- * visible transition collapses into a narrow band however wide the ramp is. Blending between
- * neighbouring radii instead means the *kernel* grows across the band, which is a real progression.
- *
- * The hats sum to exactly one at every position, so the branches recombine into the original image
- * rather than darkening or blowing out where they overlap. Output is premultiplied — scaling the
- * evaluated colour scales rgb and alpha together — which keeps that true for a translucent backdrop
- * too.
- */
-@Language("AGSL")
-internal const val GRADIENT_BLUR_SHADER: String = """
-uniform shader content;
-
-uniform float2 halfSize;
-// `offset - halfSize`, folded on the CPU, as in the refraction program.
-uniform float2 centerOffset;
-uniform float4 cornerRadii;
-uniform float clearWidth;
-// 1 / fadeWidth, clamped and folded on the CPU. The ramp divided by it on every pixel of every
-// branch, and there is one branch per stop.
-uniform float fadeWidthInverse;
-// clearWidth + fadeWidth. Past this depth the ramp is saturated whatever the exact distance is,
-// which is what lets the interior test below skip the field entirely.
-uniform float saturateDepth;
-uniform float stopIndex;
-uniform float stopCount;
-
-$ROUNDED_RECT_SDF
+    return dispersed(coord + d * grad, d * grad * dispersionIntensity);
+}
 
 half4 main(float2 coord) {
-    float2 centeredCoord = coord + centerOffset;
-    float radius = radiusAt(centeredCoord, cornerRadii);
-
-    // Same conservative interior test the refraction program uses: rounding pulls the boundary
-    // inward by at most the corner radius, so a pixel this far inside the axis-aligned bounds is
-    // certainly past the end of the ramp and its weight no longer depends on the exact distance.
-    // Every one of those pixels then skips the SDF's length() — on a large frosted pane that is
-    // most of them, on every one of the branches this program is instantiated for.
-    float2 inset = halfSize - abs(centeredCoord);
-    float t = 1.0;
-    if (min(inset.x, inset.y) < saturateDepth + radius) {
-        // How far inside the outline this pixel sits. Negative outside, which clamps away below.
-        float depth = -sdRoundedRect(centeredCoord, halfSize, radius);
-        t = clamp((depth - clearWidth) * fadeWidthInverse, 0.0, 1.0);
-    }
-
-    // Quintic smoothstep: zero first *and* second derivative at both ends, so the ramp neither
-    // starts nor stops with a kink that the eye could read as a drawn line.
-    float eased = t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
-
-    float s = eased * stopCount;
-    float weight = 1.0 - abs(s - stopIndex);
-
-    // Outside its own hat a branch contributes nothing, and the multiply below would do no more
-    // than scale a fetched sample to zero. Returning here skips the fetch instead — and since a
-    // pixel is inside at most two hats, that is a third of the samples at the default two steps.
-    if (weight <= 0.0) {
-        return half4(0.0);
-    }
-
-    return content.eval(coord) * half(weight);
+    return withFill(refracted(coord));
 }"""
 
 /** Directional rim light: brightest where the border normal faces `angle`. */
@@ -354,7 +418,7 @@ half4 main(float2 coord) {
  * same light seen from the other side of the lip, and it is why the two diagonals agree.
  *
  * This is the only rim in the library that draws past the element, which is why it is also the only
- * one the highlight node lets straddle the outline instead of clipping the stroke to it.
+ * one the decoration node lets straddle the outline instead of clipping the stroke to it.
  */
 @Language("AGSL")
 internal const val HIGHLIGHT_TWSE_SHADER: String = """
@@ -435,49 +499,4 @@ half4 main(float2 coord) {
 
     // The two bands never overlap, so adding them is exactly compositing them.
     return (innerTone * half(innerBand) + outerTone * half(outerBand)) * half(intensity);
-}"""
-
-/**
- * Rim light that follows a pointer.
- *
- * The border lights up on the side facing `pointer`, and falls off with distance from it, so a
- * finger dragging along a glass control drags the specular hotspot with it. This is the border
- * half of the "energises with light on interaction" behaviour; the interior glow is drawn by
- * `Modifier.interactiveHighlight`.
- */
-@Language("AGSL")
-internal const val HIGHLIGHT_DYNAMIC_SHADER: String = """
-uniform float2 halfSize;
-// Folded on the CPU, as in the directional rim.
-uniform float halfMinSize;
-// max(halfSize.x, halfSize.y) * 2, also folded — the falloff radius does not vary across the draw.
-uniform float pointerReach;
-uniform float4 cornerRadii;
-layout(color) uniform half4 color;
-uniform float falloff;
-uniform float2 pointer;
-uniform float pointerFocus;
-
-$ROUNDED_RECT_SDF
-
-half4 main(float2 coord) {
-    float2 centeredCoord = coord - halfSize;
-    float radius = radiusAt(centeredCoord, cornerRadii);
-
-    float gradRadius = min(radius * 1.5, halfMinSize);
-    float2 grad = gradSdRoundedRect(centeredCoord, halfSize, gradRadius);
-
-    float2 toPointer = pointer - centeredCoord;
-    float len = length(toPointer);
-    float2 normal = len > 0.0001 ? toPointer / len : float2(0.0, -1.0);
-
-    float aligned = max(dot(grad, normal), 0.0);
-    float facing = falloff == 1.0 ? aligned : pow(aligned, falloff);
-
-    // The distance to the pointer is exactly the length already computed for the facing term —
-    // measuring it a second time cost a second sqrt on every pixel of the element.
-    float proximity = 1.0 - smoothstep(0.0, pointerReach, len);
-    float intensity = mix(facing, facing * proximity, pointerFocus);
-
-    return color * intensity;
 }"""

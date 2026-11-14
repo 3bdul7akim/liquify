@@ -2,64 +2,76 @@ package com.hakim.liquify
 
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.Shape
-import com.hakim.liquify.effects.refractionAmountForSize
-import com.hakim.liquify.effects.refractionHeightForSize
+import com.hakim.liquify.internal.refractionAmountPx
+import com.hakim.liquify.internal.refractionHeightPx
 
 /**
  * Effect scope of a merged surface.
  *
- * It behaves exactly like an element scope for everything that is shape independent — `blur()`,
- * `vibrancy()`, `tint()` and friends chain onto [renderEffect] unchanged. `lens()` is different:
- * a merged surface has no single rounded rectangle to refract through, so the call only records
- * its parameters here and the group node feeds them into the merged-field program together with
- * the rim light and the clipping mask.
+ * Shape-independent effects — blur, vibrancy, tint — chain exactly as they do for an element. The
+ * lens does not: a merged body has no single rounded rectangle to refract through, so the call only
+ * records how each member is to be refracted — band, bend, dome and fringe — and the group's merge
+ * program does the bending along the combined outline.
  */
 internal class GroupEffectScope : BaseBackdropEffectScope() {
 
     override val shape: Shape get() = RectangleShape
 
-    /**
-     * Whether the members are refracted by their own size (`lensBySize()`) rather than by the one
-     * fixed pair below (`lens()`). See [memberRefractionHeight].
-     */
-    var refractionBySize: Boolean = false
-        private set
+    /** The material whose size rule refracts every member by its own size, or `null`. */
+    private var lensMaterial: GlassMaterial? = null
 
-    /** The band and the displacement of a fixed `lens()`, or the scales of a `lensBySize()`. */
-    var refractionHeight: Float = 0f
-        private set
-
-    var refractionAmount: Float = 0f
-        private set
+    /** An explicit `lens()`: the same band and bend for every member. */
+    private var fixedHeight = 0f
+    private var fixedAmount = 0f
 
     var depthEffect: Float = 0f
         private set
 
-    /** Records the parameters of a `lens()` call; the group builds the actual shader. */
-    fun recordLens(refractionHeight: Float, refractionAmount: Float, depthEffect: Boolean) {
-        this.refractionBySize = false
-        this.refractionHeight = refractionHeight
-        this.refractionAmount = refractionAmount
-        this.depthEffect = if (depthEffect) 1f else 0f
+    /** Whether the body fringes where it bends, as a single pane's lens does with it. */
+    var chromaticAberration: Boolean = false
+        private set
+
+    override fun lensPx(
+        refractionHeight: Float,
+        refractionAmount: Float,
+        depthEffect: Float,
+        chromaticAberration: Boolean
+    ) {
+        if (!refracts || refractionHeight <= 0f || refractionAmount <= 0f) return
+        lensMaterial = null
+        fixedHeight = refractionHeight
+        fixedAmount = refractionAmount
+        this.depthEffect = depthEffect
+        this.chromaticAberration = chromaticAberration
     }
 
-    /** Records a `lensBySize()` call: every member is refracted by its own size, scaled by these. */
-    fun recordLensBySize(heightScale: Float, amountScale: Float, depthEffect: Boolean) {
-        this.refractionBySize = true
-        this.refractionHeight = heightScale
-        this.refractionAmount = amountScale
-        this.depthEffect = if (depthEffect) 1f else 0f
+    /** Records `material()`: each member is refracted as that material would refract it alone. */
+    fun recordMaterial(material: GlassMaterial) {
+        if (!refracts) return
+        lensMaterial = material
+        fixedHeight = 0f
+        fixedAmount = 0f
+        depthEffect = if (material.depthEffect) 1f else 0f
+        chromaticAberration = material.chromaticAberration
     }
 
-    /** The refracting band of a member [width] × [height] in pixels, under whichever lens was recorded. */
+    /** The refracting band of a member [width] × [height] in pixels. */
     fun memberRefractionHeight(width: Float, height: Float): Float =
-        if (refractionBySize) refractionHeightForSize(width, height) * refractionHeight
-        else refractionHeight
+        lensMaterial?.refractionHeightPx(width, height, this) ?: fixedHeight
 
-    /** The displacement of a member [width] × [height] in pixels, likewise. */
+    /** The displacement of a member [width] × [height] in pixels. */
     fun memberRefractionAmount(width: Float, height: Float): Float =
-        if (refractionBySize) refractionAmountForSize(width, height) * refractionAmount
-        else refractionAmount
+        lensMaterial?.refractionAmountPx(width, height, this) ?: fixedAmount
+
+    /** Everything the recorded lens is made of, for the group's uniform fingerprint. */
+    fun lensFingerprint(): Long {
+        var hash = (lensMaterial?.hashCode() ?: 0).toLong()
+        hash = hash * 31L + fixedHeight.toRawBits()
+        hash = hash * 31L + fixedAmount.toRawBits()
+        hash = hash * 31L + depthEffect.toRawBits()
+        hash = hash * 31L + if (chromaticAberration) 1L else 0L
+        return hash
+    }
 
     override fun reset() {
         super.reset()
@@ -67,9 +79,10 @@ internal class GroupEffectScope : BaseBackdropEffectScope() {
     }
 
     fun resetLens() {
-        refractionBySize = false
-        refractionHeight = 0f
-        refractionAmount = 0f
+        lensMaterial = null
+        fixedHeight = 0f
+        fixedAmount = 0f
         depthEffect = 0f
+        chromaticAberration = false
     }
 }

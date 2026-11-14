@@ -1,5 +1,9 @@
 package com.hakim.liquify.catalog.ui
 
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.size
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
@@ -11,6 +15,8 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
@@ -31,7 +37,29 @@ enum class Glyph {
     Search,
     List,
     ChevronLeft,
-    Check
+    ChevronRight,
+    ChevronDown,
+    Check,
+    Close,
+    Play,
+    Shuffle,
+    Reset,
+    Star,
+}
+
+/**
+ * [glyph] as a composable of [size], drawn at [scale] of it — the form every control in the catalog
+ * uses, so none of them spells out a `Canvas` of its own.
+ */
+@Composable
+fun GlyphIcon(
+    glyph: Glyph,
+    modifier: Modifier = Modifier,
+    color: Color = LocalCatalogColors.current.content,
+    size: Dp = 22.dp,
+    scale: Float = 1f,
+) {
+    Canvas(modifier.size(size)) { drawGlyph(glyph, this.size.minDimension * scale, color) }
 }
 
 /**
@@ -94,24 +122,64 @@ fun DrawScope.drawGlyph(
                 }
             }
 
-            Glyph.ChevronLeft -> {
+            Glyph.ChevronLeft -> drawPath(polyline(size, 0.62f, 0.22f, 0.35f, 0.5f, 0.62f, 0.78f), color, style = stroke)
+
+            Glyph.ChevronRight -> drawPath(polyline(size, 0.38f, 0.22f, 0.65f, 0.5f, 0.38f, 0.78f), color, style = stroke)
+
+            Glyph.ChevronDown -> drawPath(polyline(size, 0.22f, 0.38f, 0.5f, 0.65f, 0.78f, 0.38f), color, style = stroke)
+
+            Glyph.Check -> drawPath(polyline(size, 0.22f, 0.52f, 0.42f, 0.72f, 0.78f, 0.28f), color, style = stroke)
+
+            Glyph.Close -> {
+                val inset = size * 0.26f
+                drawLine(color, Offset(inset, inset), Offset(size - inset, size - inset), strokeWidth, StrokeCap.Round)
+                drawLine(color, Offset(size - inset, inset), Offset(inset, size - inset), strokeWidth, StrokeCap.Round)
+            }
+
+            Glyph.Play -> {
                 val path = Path().apply {
-                    moveTo(size * 0.62f, size * 0.22f)
-                    lineTo(size * 0.35f, size * 0.5f)
-                    lineTo(size * 0.62f, size * 0.78f)
+                    moveTo(size * 0.34f, size * 0.22f)
+                    lineTo(size * 0.78f, size * 0.5f)
+                    lineTo(size * 0.34f, size * 0.78f)
+                    close()
                 }
                 drawPath(path, color, style = stroke)
             }
 
-            Glyph.Check -> {
-                val path = Path().apply {
-                    moveTo(size * 0.22f, size * 0.52f)
-                    lineTo(size * 0.42f, size * 0.72f)
-                    lineTo(size * 0.78f, size * 0.28f)
-                }
-                drawPath(path, color, style = stroke)
+            Glyph.Shuffle -> {
+                // Two crossing strokes with an arrow head on each, like the usual shuffle mark.
+                drawPath(polyline(size, 0.16f, 0.3f, 0.4f, 0.3f, 0.66f, 0.7f, 0.84f, 0.7f), color, style = stroke)
+                drawPath(polyline(size, 0.16f, 0.7f, 0.4f, 0.7f, 0.66f, 0.3f, 0.84f, 0.3f), color, style = stroke)
+                drawPath(polyline(size, 0.74f, 0.2f, 0.84f, 0.3f, 0.74f, 0.4f), color, style = stroke)
+                drawPath(polyline(size, 0.74f, 0.6f, 0.84f, 0.7f, 0.74f, 0.8f), color, style = stroke)
             }
+
+            Glyph.Reset -> {
+                // Three quarters of a circle, and the arrow head that closes it.
+                drawArc(
+                    color = color,
+                    startAngle = -60f,
+                    sweepAngle = 290f,
+                    useCenter = false,
+                    topLeft = Offset(size * 0.2f, size * 0.2f),
+                    size = Size(size * 0.6f, size * 0.6f),
+                    style = stroke
+                )
+                drawPath(polyline(size, 0.62f, 0.14f, 0.68f, 0.26f, 0.55f, 0.32f), color, style = stroke)
+            }
+
+            Glyph.Star -> drawPath(starPath(size), color, style = stroke)
         }
+    }
+}
+
+/** An open path through the given points, each as a share of [size]: x0, y0, x1, y1, … */
+private fun polyline(size: Float, vararg points: Float): Path = Path().apply {
+    moveTo(size * points[0], size * points[1])
+    var i = 2
+    while (i < points.size) {
+        lineTo(size * points[i], size * points[i + 1])
+        i += 2
     }
 }
 
@@ -129,6 +197,21 @@ private fun roundedPolygonPath(sides: Int, size: Float, rotationDegrees: Float):
         }
         close()
     }
+}
+
+/** A five-pointed star, its points on one circle and its inner corners on a smaller one. */
+private fun starPath(size: Float): Path = Path().apply {
+    val center = size / 2f
+    val outer = size * 0.42f
+    val inner = outer * 0.45f
+    for (i in 0 until 10) {
+        val angle = -PI.toFloat() / 2f + i * PI.toFloat() / 5f
+        val radius = if (i % 2 == 0) outer else inner
+        val x = center + radius * cos(angle)
+        val y = center + radius * sin(angle)
+        if (i == 0) moveTo(x, y) else lineTo(x, y)
+    }
+    close()
 }
 
 private fun heartPath(size: Float): Path = Path().apply {

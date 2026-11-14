@@ -5,7 +5,6 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -22,7 +21,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
-import com.hakim.liquify.Backdrop
+import com.hakim.liquify.GlassMaterial
+import com.hakim.liquify.LiquifyTheme
 import com.hakim.liquify.catalog.ui.BodyStyle
 import com.hakim.liquify.catalog.ui.CardShape
 import com.hakim.liquify.catalog.ui.CatalogText
@@ -31,8 +31,8 @@ import com.hakim.liquify.catalog.ui.HeadingStyle
 import com.hakim.liquify.catalog.ui.LocalCatalogColors
 import com.hakim.liquify.catalog.ui.MaterialSurface
 import com.hakim.liquify.catalog.ui.drawGlyph
+import com.hakim.liquify.catalog.ui.screenPadding
 import com.hakim.liquify.liquify
-import com.hakim.liquify.material.GlassMaterial
 
 private val Materials = listOf(
     Triple(
@@ -52,35 +52,35 @@ private val Materials = listOf(
         "Heavily frosted and opaque, for large surfaces such as sheets and sidebars."
     ),
     Triple(
-        "Twenty Seven",
+        "TwSe",
         GlassMaterial.TwSe,
-        "The everyday material, but the difference is at the rim lights (maybe matching iOS 27)"
+        "Regular with a drawn edge — a lit band inside the outline, a shadow band outside it."
     )
 )
 
 /**
- * The three presets over identical backdrop content — and the app's material picker.
+ * The presets over identical backdrop content — and the app's material picker.
  *
- * Tapping a card publishes it through
- * [ProvideGlassMaterial][com.hakim.liquify.material.ProvideGlassMaterial] at the root, so every
- * other pane of glass in the app — this screen's top bar included — switches to it on the next
- * frame. Each card keeps rendering its *own* preset regardless, which is what makes the comparison
- * a comparison.
+ * Tapping a card makes it the material of the [LiquifyTheme][com.hakim.liquify.LiquifyTheme] at the
+ * root, so every other pane of glass in the app — this screen's top bar included — switches to it on
+ * the next frame. Each card keeps rendering its *own* preset regardless, which is what makes the
+ * comparison a comparison.
  */
 @Composable
 fun MaterialsScreen(
-    backdrop: Backdrop,
     selected: GlassMaterial,
     onSelect: (GlassMaterial) -> Unit
 ) {
     val colors = LocalCatalogColors.current
+    // The look's own fill, so a card stays a card under Frosted and Solid as well.
+    val tint = LiquifyTheme.material.tint
 
     // LazyColumn, not a scrolling Column: each card is an offscreen layer plus a render-effect
     // chain, and an eager Column would compose and draw all of them whether or not they are on
     // screen.
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 20.dp, top = 100.dp, end = 20.dp, bottom = 20.dp),
+        contentPadding = screenPadding(),
         verticalArrangement = Arrangement.spacedBy(18.dp)
     ) {
         items(Materials) { (name, preset, description) ->
@@ -92,9 +92,9 @@ fun MaterialsScreen(
                     .pointerInput(preset) { detectTapGestures { onSelect(preset) } }
                     .liquify(
                         shape = CardShape,
-                        material = preset,
-                        backdrop = backdrop,
-                        tint = colors.glassTint,
+                        tint = tint,
+                        // The app's motion, the preset's glass.
+                        material = preset.copy(motion = LiquifyTheme.material.motion),
                         dragging = true,
                         interactiveHighlight = true,
                         stretching = true
@@ -127,11 +127,11 @@ fun MaterialsScreen(
         }
 
         item {
-            MaterialSurface(Modifier.fillMaxWidth()) { _ ->
+            MaterialSurface(Modifier.fillMaxWidth()) {
                 CatalogText(
-                    "Tap a card to make it the app's material. It is published once at the root " +
-                        "with ProvideGlassMaterial, and every liquify() below reads it from " +
-                        "LocalGlassMaterial — no screen has to be told twice.",
+                    "Tap a card to make it the app's material. It is declared once at the root " +
+                        "with LiquifyTheme, and every liquify() below inherits it — no screen " +
+                        "has to be told twice.",
                     BodyStyle,
                     Modifier.padding(18.dp)
                 )

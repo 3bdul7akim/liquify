@@ -13,8 +13,8 @@ import androidx.annotation.ChecksSdkIntAtLeast
 /**
  * Whether `android.graphics.RenderEffect` is available on this device (Android 12, API 31).
  *
- * When this returns `false`, [blur][com.hakim.liquify.effects.blur] and every colour effect are
- * silently skipped and glass elements render as a plain translucent surface.
+ * When this returns `false`, the blur and every colour effect are skipped and glass renders as a
+ * plain translucent surface with its rim and shadows.
  */
 @ChecksSdkIntAtLeast(api = Build.VERSION_CODES.S)
 public fun isRenderEffectSupported(): Boolean =
@@ -23,8 +23,8 @@ public fun isRenderEffectSupported(): Boolean =
 /**
  * Whether `android.graphics.RuntimeShader` (AGSL) is available on this device (Android 13, API 33).
  *
- * Refraction ([lens][com.hakim.liquify.effects.lens]), the merge/gooey pass and the shader based
- * highlight styles all require this. Everything degrades gracefully when it returns `false`.
+ * Refraction, merging, the shader rims and the touch glow's hotspots all need it. Everything degrades
+ * on its own when it returns `false`.
  */
 @ChecksSdkIntAtLeast(api = Build.VERSION_CODES.TIRAMISU)
 public fun isRuntimeShaderSupported(): Boolean =

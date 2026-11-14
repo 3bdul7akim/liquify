@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -28,7 +27,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.lerp
-import com.hakim.liquify.Backdrop
+import com.hakim.liquify.LiquidGlassGroup
 import com.hakim.liquify.catalog.ui.BodyStyle
 import com.hakim.liquify.catalog.ui.CapsuleShape
 import com.hakim.liquify.catalog.ui.CatalogText
@@ -38,12 +37,10 @@ import com.hakim.liquify.catalog.ui.HeadingStyle
 import com.hakim.liquify.catalog.ui.LabelStyle
 import com.hakim.liquify.catalog.ui.LocalCatalogColors
 import com.hakim.liquify.catalog.ui.MaterialSurface
-import com.hakim.liquify.catalog.ui.catalogGlassEffects
 import com.hakim.liquify.catalog.ui.drawGlyph
-import com.hakim.liquify.group.LiquidGlassGroup
+import com.hakim.liquify.catalog.ui.screenPadding
 import com.hakim.liquify.liquify
-import com.hakim.liquify.material.LocalGlassMaterial
-import com.hakim.liquify.transition.motionBlur
+import com.hakim.liquify.motionBlur
 import kotlin.math.roundToInt
 
 private val SegmentWidths = listOf(64.dp, 64.dp, 124.dp)
@@ -53,13 +50,12 @@ private val SegmentHeight = 62.dp
 /**
  * One control splitting into three.
  *
- * The trick is that all three members start life *exactly on top of each other* at the collapsed
- * width. Identical overlapping capsules produce one capsule, so there is nothing to cross-fade —
- * the single "Select" pill genuinely is the three controls, and separating them is a continuous
- * motion of the same surface rather than one view being swapped for another.
+ * All three members start life *exactly on top of each other* at the collapsed width. Identical
+ * overlapping capsules produce one capsule, so there is nothing to cross-fade — the single "Select"
+ * pill genuinely is the three controls, and separating them is a continuous motion of one surface.
  */
 @Composable
-fun MorphScreen(backdrop: Backdrop) {
+fun MorphScreen() {
     var expanded by remember { mutableStateOf(false) }
     val progress by animateFloatAsState(
         targetValue = if (expanded) 1f else 0f,
@@ -68,7 +64,6 @@ fun MorphScreen(backdrop: Backdrop) {
     )
 
     val glyphColor = LocalCatalogColors.current.content
-    val morphEffects = catalogGlassEffects()
 
     val density = LocalDensity.current
     val collapsedWidth = SegmentWidths.fold(SegmentGap * 2) { acc, dp -> acc + dp } * 0.78f
@@ -87,12 +82,9 @@ fun MorphScreen(backdrop: Backdrop) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .systemBarsPadding()
-            .padding(horizontal = 20.dp)
+            .padding(screenPadding())
     ) {
-        Spacer(Modifier.height(84.dp))
-
-        GlassSurface(backdrop = backdrop, modifier = Modifier.fillMaxWidth()) {
+        GlassSurface(modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.padding(18.dp)) {
                 CatalogText("Tap the control", HeadingStyle)
                 Spacer(Modifier.height(6.dp))
@@ -108,14 +100,11 @@ fun MorphScreen(backdrop: Backdrop) {
         Spacer(Modifier.height(28.dp))
 
         LiquidGlassGroup(
-            backdrop = backdrop,
             modifier = Modifier
                 .fillMaxWidth()
                 .height(150.dp),
-            effects = morphEffects,
             merge = 0.5f,
-            contentAlignment = Alignment.Center,
-            material = LocalGlassMaterial.current
+            contentAlignment = Alignment.Center
         ) {
             SegmentWidths.forEachIndexed { index, expandedWidth ->
                 val width = lerp(collapsedWidth, expandedWidth, progress)
@@ -129,7 +118,7 @@ fun MorphScreen(backdrop: Backdrop) {
                         .size(width, SegmentHeight)
                         .pointerInput(Unit) { detectTapGestures { expanded = !expanded } }
                         .liquify(CapsuleShape, dragging = true, interactiveHighlight = true)
-                        .motionBlur({progress}, maxRadius = 10.dp, fullSpeed = 20f),
+                        .motionBlur({ progress }, maxRadius = 10.dp, fullSpeed = 20f),
                     contentAlignment = Alignment.Center
                 ) {
                     Box(Modifier.alpha(progress)) {
@@ -148,8 +137,8 @@ fun MorphScreen(backdrop: Backdrop) {
                 }
             }
 
-            // The collapsed label lives above the merged surface rather than inside any one
-            // member, because while collapsed no single member *is* the control.
+            // The collapsed label lives above the merged surface rather than inside any one member,
+            // because while collapsed no single member *is* the control.
             Box(Modifier.alpha(1f - progress).pointerInput(Unit) { detectTapGestures { expanded = !expanded } }) {
                 CatalogText("Select", LabelStyle)
             }
@@ -157,7 +146,7 @@ fun MorphScreen(backdrop: Backdrop) {
 
         Spacer(Modifier.height(20.dp))
 
-        MaterialSurface(shape = CapsuleShape) { _ ->
+        MaterialSurface(shape = CapsuleShape) {
             CatalogText(
                 if (expanded) "Tap again to merge back" else "Tap to split",
                 BodyStyle,

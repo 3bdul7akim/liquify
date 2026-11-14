@@ -1,21 +1,16 @@
 package com.hakim.liquify.catalog.screens
 
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -23,197 +18,205 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
-import com.hakim.liquify.Backdrop
+import com.hakim.liquify.GlassInnerShadow
+import com.hakim.liquify.GlassShadow
+import com.hakim.liquify.LiquifyTheme
+import com.hakim.liquify.catalog.ui.BodyStyle
 import com.hakim.liquify.catalog.ui.CatalogText
+import com.hakim.liquify.catalog.ui.CatalogTopBarAction
+import com.hakim.liquify.catalog.ui.DemoCard
 import com.hakim.liquify.catalog.ui.Divider
 import com.hakim.liquify.catalog.ui.Glyph
+import com.hakim.liquify.catalog.ui.GlyphIcon
 import com.hakim.liquify.catalog.ui.HeadingStyle
-import com.hakim.liquify.catalog.ui.LabelStyle
 import com.hakim.liquify.catalog.ui.LocalCatalogColors
-import com.hakim.liquify.catalog.ui.MaterialSurface
 import com.hakim.liquify.catalog.ui.ParameterRow
+import com.hakim.liquify.catalog.ui.RimKind
+import com.hakim.liquify.catalog.ui.ScreenColumn
+import com.hakim.liquify.catalog.ui.SettingRow
 import com.hakim.liquify.catalog.ui.components.LiquidToggle
-import com.hakim.liquify.catalog.ui.drawGlyph
-import com.hakim.liquify.effects.blur
-import com.hakim.liquify.effects.gradientBlur
-import com.hakim.liquify.effects.lens
-import com.hakim.liquify.effects.opacity
-import com.hakim.liquify.effects.tint
-import com.hakim.liquify.effects.vibrancy
-import com.hakim.liquify.highlight.Highlight
-import com.hakim.liquify.highlight.HighlightStyle
+import com.hakim.liquify.catalog.ui.components.LiquidTopTabs
+import com.hakim.liquify.catalog.ui.rimOf
 import com.hakim.liquify.liquify
-import com.hakim.liquify.shadow.Shadow
 import com.kyant.shapes.RoundedRectangle
 
-/** Every knob of the effect stack, live, on one card. */
+/** Everything the playground's card is made of, at the values of the Regular material. */
+@Immutable
+private data class Recipe(
+    val blur: Float = 8f,
+    val height: Float = 20f,
+    val amount: Float = 35f,
+    val saturation: Float = 1.15f,
+    val tint: Float = 0.06f,
+    val corner: Float = 36f,
+    val depth: Boolean = true,
+    val dispersion: Boolean = false,
+    val bySize: Boolean = true,
+    val rim: RimKind? = RimKind.Default,
+    val shadow: Boolean = true,
+    val innerShadow: Boolean = false,
+    val pressed: Boolean = true,
+    val refractsContent: Boolean = false,
+    val stretching: Boolean = true,
+)
+
+/**
+ * Every parameter of a [GlassMaterial][com.hakim.liquify.GlassMaterial] on one card, live.
+ *
+ * The card is built from the sliders below as an ordinary material, so what it shows is exactly what
+ * an app gets from `GlassMaterial(…)`. With **Pressed state** on it also has a `pressedMaterial` — a
+ * clear, deeper lens with a recessed shadow — and blends into it while held, in the draw phase. The
+ * reset in the top bar puts everything back.
+ */
 @Composable
-fun PlaygroundScreen(backdrop: Backdrop) {
-    var blurRadius by remember { mutableFloatStateOf(0.25f) }
-    var refractionHeight by remember { mutableFloatStateOf(0.4f) }
-    var refractionAmount by remember { mutableFloatStateOf(0.45f) }
-    var cornerRadius by remember { mutableFloatStateOf(0.45f) }
-    var saturation by remember { mutableFloatStateOf(0.25f) }
-    var tintAlpha by remember { mutableFloatStateOf(0.06f) }
-    var surfaceOpacity by remember { mutableFloatStateOf(1f) }
-    var depth by remember { mutableStateOf(true) }
-    var stretching by remember { mutableStateOf(false) }
-    var dispersion by remember { mutableStateOf(false) }
-    var ambientRim by remember { mutableStateOf(false) }
-    var twSeRim by remember { mutableStateOf(false) }
-    var gradient by remember { mutableStateOf(false) }
+fun PlaygroundScreen() {
+    var recipe by remember { mutableStateOf(Recipe()) }
+    val colors = LocalCatalogColors.current
 
-    val blurDp = blurRadius * 40f
-    val heightDp = refractionHeight * 60f
-    val amountDp = refractionAmount * 80f
-    val cornerDp = cornerRadius * 80f
-    val saturationValue = 1f + saturation * 2f
+    CatalogTopBarAction(Glyph.Reset, "Reset the recipe", colors.danger) { recipe = Recipe() }
 
-    val glyphColor = LocalCatalogColors.current.content
+    // The app's motion stays: the card moves like every other pane.
+    val base = LiquifyTheme.material
+    val material = remember(recipe, base) {
+        base.copy(
+            blurRadius = recipe.blur.dp,
+            refractionHeight = recipe.height.dp,
+            refractionAmount = recipe.amount.dp,
+            saturation = recipe.saturation,
+            tint = Color.White.copy(alpha = recipe.tint),
+            depthEffect = recipe.depth,
+            chromaticAberration = recipe.dispersion,
+            refractionBySize = recipe.bySize,
+            rim = recipe.rim?.let { rimOf(it, width = if (it == RimKind.Outline || it == RimKind.TwSe) 1.dp else 0.5.dp) },
+            shadow = if (recipe.shadow) GlassShadow.Default else null,
+            innerShadow = if (recipe.innerShadow) GlassInnerShadow.Default else null,
+        )
+    }
+    val pressedMaterial = remember(material, recipe.pressed) {
+        if (!recipe.pressed) null
+        else material.copy(
+            blurRadius = 0.dp,
+            refractionHeight = material.refractionHeight * 1.5f,
+            refractionAmount = material.refractionAmount * 1.5f,
+            tint = colors.accent.copy(alpha = 0.12f),
+            innerShadow = GlassInnerShadow(radius = 10.dp),
+        )
+    }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(start = 20.dp, top = 110.dp, end = 20.dp, bottom = 30.dp)
-    ) {
+    ScreenColumn {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(200.dp)
                 .liquify(
-                    shape = { RoundedRectangle(cornerDp.dp) },
-                    effects = {
-                        vibrancy(saturationValue)
-                        tint(Color.White.copy(alpha = tintAlpha))
-                        if (surfaceOpacity < 1f) opacity(surfaceOpacity)
-                        // Same radius either way. The uniform blur goes under the lens so the
-                        // refraction bends softened light; the gradient blur goes over it, or the
-                        // lens would sample the soft middle back out over the rim.
-                        if (!gradient) blur(blurDp.dp.toPx())
-                        lens(
-                            refractionHeight = heightDp.dp.toPx(),
-                            refractionAmount = amountDp.dp.toPx(),
-                            depthEffect = depth,
-                            chromaticAberration = dispersion
-                        )
-                        if (gradient) gradientBlur(radius = blurDp.dp.toPx())
-                    },
-                    backdrop = backdrop,
-                    highlight = {
-                        when {
-                            // Follows the system theme on its own: white quadrants over the dark
-                            // wallpaper, black ones in light mode. Flip the device theme with this
-                            // on and the rim inverts without anything here changing.
-                            twSeRim -> Highlight.TwSe
-                            ambientRim -> Highlight(width = 1.dp, style = HighlightStyle.Ambient)
-                            else -> Highlight.Default
-                        }
-                    },
-                    shadow = { Shadow.Default },
-                    // Two booleans and the card flexes towards the finger and lights up — no
-                    // interaction object to hoist.
+                    shape = RoundedRectangle(recipe.corner.dp),
+                    material = material,
+                    pressedMaterial = pressedMaterial,
+                    // Two booleans and the card leans towards the finger and lights up — no
+                    // interaction object to hoist. The press it measures drives the pressed blend.
                     dragging = true,
+                    stretching = recipe.stretching,
                     interactiveHighlight = true,
-                    stretching = stretching
+                    refractsContent = recipe.refractsContent,
                 ),
             contentAlignment = Alignment.Center
         ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-                listOf(Glyph.Circle, Glyph.Triangle, Glyph.Square, Glyph.Hexagon).forEach { glyph ->
-                    Canvas(Modifier.size(34.dp)) {
-                        drawGlyph(glyph, size.minDimension, glyphColor)
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
+                    listOf(Glyph.Circle, Glyph.Triangle, Glyph.Square, Glyph.Hexagon).forEach { glyph ->
+                        GlyphIcon(glyph, size = 34.dp)
                     }
                 }
+                Spacer(Modifier.height(12.dp))
+                CatalogText("Hold and drag me", HeadingStyle)
             }
         }
 
-        Spacer(Modifier.height(20.dp))
-
-        // Plain surface, not glass: eleven glass controls stacked on a glass card would be eleven
-        // backdrops showing through a twelfth.
-        MaterialSurface(modifier = Modifier.fillMaxWidth()) { cardBackdrop ->
-            Column(Modifier.padding(18.dp)) {
-                CatalogText("Effect stack", HeadingStyle)
-                Spacer(Modifier.height(8.dp))
-
-                ParameterRow(
-                    cardBackdrop,
-                    "blur(radius)",
-                    { blurRadius },
-                    "${blurDp.toInt()} dp",
-                    onValueChange = { blurRadius = it }
-                )
-                ParameterRow(
-                    cardBackdrop,
-                    "lens(refractionHeight)",
-                    { refractionHeight },
-                    "${heightDp.toInt()} dp",
-                    onValueChange = { refractionHeight = it }
-                )
-                ParameterRow(
-                    cardBackdrop,
-                    "lens(refractionAmount)",
-                    { refractionAmount },
-                    "${amountDp.toInt()} dp",
-                    onValueChange = { refractionAmount = it }
-                )
-                ParameterRow(
-                    cardBackdrop,
-                    "vibrancy(amount)",
-                    { saturation },
-                    "%.2f".format(saturationValue),
-                    onValueChange = { saturation = it }
-                )
-                ParameterRow(
-                    cardBackdrop,
-                    "tint(alpha)",
-                    { tintAlpha },
-                    "%.2f".format(tintAlpha),
-                    onValueChange = { tintAlpha = it }
-                )
-                ParameterRow(
-                    cardBackdrop,
-                    "opacity(alpha)",
-                    { surfaceOpacity },
-                    "%.2f".format(surfaceOpacity),
-                    onValueChange = { surfaceOpacity = it }
-                )
-                ParameterRow(
-                    cardBackdrop,
-                    "Corner radius",
-                    { cornerRadius },
-                    "${cornerDp.toInt()} dp",
-                    onValueChange = { cornerRadius = it }
-                )
-
-                Spacer(Modifier.height(10.dp))
-                Divider()
-                Spacer(Modifier.height(4.dp))
-
-                ToggleRow(cardBackdrop, "gradientBlur", gradient) { gradient = !gradient }
-                ToggleRow(cardBackdrop, "depthEffect", depth) { depth = !depth }
-                ToggleRow(cardBackdrop, "chromaticAberration", dispersion) { dispersion = !dispersion }
-                ToggleRow(cardBackdrop, "Ambient rim", ambientRim) { ambientRim = !ambientRim }
-                ToggleRow(cardBackdrop, "TwSe rim", twSeRim) { twSeRim = !twSeRim }
-                ToggleRow(cardBackdrop, "Stretching", stretching) { stretching = !stretching }
+        DemoCard(
+            "Lens",
+            "The band along the rim that bends the backdrop, and how far it bends it. By size, an " +
+                "element eases into these values as it grows; off, every element gets them as they are.",
+        ) {
+            ParameterRow(
+                "refractionHeight", { recipe.height }, "${recipe.height.toInt()} dp", 0f..60f,
+                { recipe = recipe.copy(height = it) }, defaultValue = 20f,
+            )
+            ParameterRow(
+                "refractionAmount", { recipe.amount }, "${recipe.amount.toInt()} dp", 0f..80f,
+                { recipe = recipe.copy(amount = it) }, defaultValue = 35f,
+            )
+            SettingRow("refractionBySize") {
+                LiquidToggle({ recipe.bySize }, { recipe = recipe.copy(bySize = it) })
+            }
+            SettingRow("depthEffect") { LiquidToggle({ recipe.depth }, { recipe = recipe.copy(depth = it) }) }
+            SettingRow("chromaticAberration") {
+                LiquidToggle({ recipe.dispersion }, { recipe = recipe.copy(dispersion = it) })
+            }
+            SettingRow("refractsContent") {
+                LiquidToggle({ recipe.refractsContent }, { recipe = recipe.copy(refractsContent = it) })
             }
         }
-    }
-}
 
-@Composable
-private fun ToggleRow(
-    backdrop: Backdrop,
-    label: String,
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        CatalogText(label, LabelStyle, Modifier.weight(1f))
-        LiquidToggle(selected = { checked }, onSelect = onCheckedChange, backdrop = backdrop)
+        DemoCard(
+            "Surface",
+            "Blur under the lens, vibrancy so colours survive it, a tint over it, and the shape.",
+        ) {
+            ParameterRow(
+                "blurRadius", { recipe.blur }, "${recipe.blur.toInt()} dp", 0f..40f,
+                { recipe = recipe.copy(blur = it) }, defaultValue = 8f,
+            )
+            ParameterRow(
+                "saturation", { recipe.saturation }, "%.2f".format(recipe.saturation), 1f..3f,
+                { recipe = recipe.copy(saturation = it) }, defaultValue = 1.15f,
+            )
+            ParameterRow(
+                "tint (alpha)", { recipe.tint }, "%.2f".format(recipe.tint), 0f..0.6f,
+                { recipe = recipe.copy(tint = it) }, defaultValue = 0.06f,
+            )
+            ParameterRow(
+                "Corner radius", { recipe.corner }, "${recipe.corner.toInt()} dp", 0f..100f,
+                { recipe = recipe.copy(corner = it) }, defaultValue = 36f,
+            )
+        }
+
+        DemoCard(
+            "Edge and depth",
+            "The rim, the drop shadow and a recessed inner shadow — the Rims & shadows screen has " +
+                "every knob of them.",
+        ) {
+            SettingRow("Rim") {
+                LiquidToggle({ recipe.rim != null }, { recipe = recipe.copy(rim = if (it) RimKind.Default else null) })
+            }
+            recipe.rim?.let { rim ->
+                LiquidTopTabs(
+                    titles = RimKind.entries.map { it.label },
+                    selectedIndex = rim.ordinal,
+                    onSelect = { recipe = recipe.copy(rim = RimKind.entries[it]) },
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                )
+            }
+            Divider()
+            SettingRow("shadow") { LiquidToggle({ recipe.shadow }, { recipe = recipe.copy(shadow = it) }) }
+            SettingRow("innerShadow") {
+                LiquidToggle({ recipe.innerShadow }, { recipe = recipe.copy(innerShadow = it) })
+            }
+        }
+
+        DemoCard(
+            "Under the finger",
+            "pressedMaterial blends the whole recipe towards a second one while the card is held — " +
+                "here a clear, deeper lens. Stretching lets it swell and pull along its travel.",
+        ) {
+            SettingRow("Pressed state") { LiquidToggle({ recipe.pressed }, { recipe = recipe.copy(pressed = it) }) }
+            SettingRow("stretching") {
+                LiquidToggle({ recipe.stretching }, { recipe = recipe.copy(stretching = it) })
+            }
+            Spacer(Modifier.height(6.dp))
+            CatalogText(
+                "Frosted keeps the blur, tint, rim and shadows and drops the lens and the touch; Solid " +
+                    "keeps only the tint, rim and shadows. Switch looks on the Looks & motion screen.",
+                BodyStyle
+            )
+        }
     }
 }

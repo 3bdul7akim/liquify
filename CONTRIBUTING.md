@@ -46,19 +46,35 @@ Report negative results honestly. More than one optimisation in here was measure
 nothing, and reverted — that is a good outcome, not a wasted afternoon.
 
 **Effect order is GPU order.** `blur()` before `lens()` refracts already-blurred content, which is
-what reads as thick glass; reversed, it reads as a blurred sticker. `gradientBlur()` is the
-exception and goes *after* `lens()`, because the lens samples inwards and would otherwise drag the
-soft interior back out over the rim.
+what reads as thick glass; reversed, it reads as a blurred sticker.
 
 **Keep the API-level fallbacks intact.** Nothing may throw on an older device. Refraction, merging
 and shader rims need API 33; blur and colour effects need 31. Below that they are skipped, and the
-element still renders with its shape, rim and shadow.
+element still renders with its shape, tint, rim and shadow.
+
+**Keep every look working.** A change to the glass has to hold under all three `GlassLook`s —
+`Liquid`, `Frosted` and `Solid` — and inside and outside a `LiquidGlassGroup`. The catalog's
+Looks & motion screen switches the whole app between them, and its Materials screen between the
+presets: the quickest way to see all of them.
+
+## Layout
+
+The whole public API lives in `com.hakim.liquify`; everything in `com.hakim.liquify.internal` is an
+implementation detail and may change at any time. A pane is two nodes — `GlassDecorationNode`
+(shadow, rim, inner shadow) outside the glass, and `LiquifyNode` (backdrop, effect chain, tint,
+content), whose layer clips to the shape. JVM tests for the pure parts — the refraction rule, the
+material blend, the colour matrices, the springs — live in `liquify/src/test`:
+
+```bash
+./gradlew :liquify:testDebugUnitTest
+```
 
 ## Style
 
 `explicitApi()` is on for the library, so every public declaration needs an explicit visibility and
 a return type. Comments explain *why*, not *what* — if a line needs a comment to say what it does,
-the line is usually the problem.
+the line is usually the problem. Keep call sites short: anything an app would otherwise repeat at
+every element belongs on the material or the theme.
 
 ## Attribution
 
